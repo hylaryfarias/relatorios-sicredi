@@ -84,18 +84,24 @@ async function clicar(page, textos, { timeout = 15000 } = {}) {
   const inicio = Date.now();
   while (Date.now() - inicio < timeout) {
     for (const t of lista) {
-      const alvo = t instanceof RegExp
-        ? page.getByText(t).first()
-        : page.getByRole('button', { name: t }).first();
-      try { if (await alvo.isVisible({ timeout: 500 })) { await alvo.click(); return true; } }
-      catch { /* tenta o proximo */ }
-      // fallback: qualquer elemento clicavel com esse texto
+      const re = t instanceof RegExp ? t : new RegExp(`^\\s*${t}\\s*$`, 'i');
+      // 1) botao pelo nome acessivel
+      try { const b = page.getByRole('button', { name: t }).first();
+            if (await b.isVisible({ timeout: 350 })) { await b.click(); return true; } } catch { /* segue */ }
+      // 2) link pelo nome acessivel (menus do portal costumam ser links)
+      try { const l = page.getByRole('link', { name: t }).first();
+            if (await l.isVisible({ timeout: 350 })) { await l.click(); return true; } } catch { /* segue */ }
+      // 3) qualquer elemento clicavel que contenha o texto (botao/link/div com papel)
       try {
-        const q = page.getByText(t instanceof RegExp ? t : new RegExp(`^\\s*${t}\\s*$`, 'i')).first();
-        if (await q.isVisible({ timeout: 500 })) { await q.click(); return true; }
-      } catch { /* tenta o proximo */ }
+        const c = page.locator('button, a, [role=button], input[type=submit], input[type=button]')
+          .filter({ hasText: re }).first();
+        if (await c.isVisible({ timeout: 350 })) { await c.click(); return true; }
+      } catch { /* segue */ }
+      // 4) ultimo recurso: o texto puro na tela
+      try { const e = page.getByText(re).first();
+            if (await e.isVisible({ timeout: 350 })) { await e.click(); return true; } } catch { /* segue */ }
     }
-    await espera(600);
+    await espera(500);
   }
   throw new Error(`Nao achei para clicar: ${lista.map(String).join(' / ')}`);
 }
@@ -115,7 +121,9 @@ async function entrar(page, conta) {
   catch { await page.locator('input[type=password]').first().fill(conta.senha); }
 
   const marcaTempo = Date.now(); // para so pegar o e-mail que chegar depois daqui
-  await clicar(page, ['Entrar', /entrar/i]);
+  // enviar o login: tenta o botao Entrar; se nao achar, aperta Enter no campo de senha
+  const clicou = await clicar(page, ['Entrar', /^entrar$/i], { timeout: 8000 }).catch(() => false);
+  if (!clicou) { console.log(`  ${conta.nome}: nao achei o botao, apertando Enter.`); await senha.press('Enter').catch(() => {}); }
   await espera(2500);
   await lidarCaptcha(page, conta.nome);
 
