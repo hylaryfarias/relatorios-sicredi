@@ -41,7 +41,7 @@ function carregarContas() {
     + 'No GitHub, cadastre o segredo SICREDI_CONTAS.');
 }
 
-const VERSAO = 'v5 (digitacao reforcada)';
+const VERSAO = 'v6 (codigo por email)';
 const espera = (ms) => new Promise(r => setTimeout(r, ms));
 
 /* Digita LETRA POR LETRA e ainda reforca com os eventos nativos que os portais
@@ -160,18 +160,27 @@ async function entrar(page, conta) {
   console.log(`  ${conta.nome}: pedi o codigo por e-mail, lendo a caixa...`);
 
   // ler o codigo e digitar
-  const codigo = await pegarCodigo({ desde: marcaTempo, remetente: 'sicredi', timeoutSeg: 150 });
-  console.log(`  ${conta.nome}: codigo recebido, digitando.`);
-  // campo de codigo: pode ser um input unico ou varios quadradinhos
-  const campos = page.locator('input[inputmode="numeric"], input[type="tel"], input[maxlength="1"]');
-  const n = await campos.count();
-  if (n > 1) { for (let i = 0; i < Math.min(n, codigo.length); i++) await campos.nth(i).fill(codigo[i]); }
-  else {
-    const uni = page.getByLabel(/c[oó]digo/i).first();
-    try { await uni.fill(codigo, { timeout: 5000 }); }
-    catch { await page.locator('input').last().fill(codigo); }
+  const codigo = await pegarCodigo({ desde: marcaTempo, remetente: 'fiserv.com', timeoutSeg: 150 });
+  console.log(`  ${conta.nome}: codigo ${codigo} recebido, preenchendo.`);
+  // campo do token: seis quadradinhos (um digito cada) ou, as vezes, um so.
+  // digitar com TECLAS REAIS, senao o botao Confirmar continua cinza.
+  const boxes = page.locator('input[maxlength="1"], input[inputmode="numeric"], input[type="tel"]');
+  const nb = await boxes.count();
+  if (nb > 1) {
+    for (let i = 0; i < Math.min(nb, codigo.length); i++) {
+      await boxes.nth(i).click();
+      await page.keyboard.type(codigo[i], { delay: 70 });
+    }
+  } else {
+    const uni = page.getByLabel(/c[oó]digo|token/i).first();
+    const campo = await uni.isVisible({ timeout: 2000 }).catch(() => false) ? uni : page.locator('input').last();
+    await digitarReal(campo, codigo);
   }
-  await clicar(page, [/confirmar|continuar|entrar|acessar|validar/i], { timeout: 12000 }).catch(() => {});
+  await espera(700);
+  // Confirmar: o click espera o botao habilitar (ficar verde)
+  const btnConf = page.getByRole('button', { name: /confirmar/i }).first();
+  try { await btnConf.click({ timeout: 12000 }); }
+  catch { await clicar(page, [/confirmar|continuar|acessar|validar/i], { timeout: 8000 }).catch(() => {}); }
   await espera(3500);
   await lidarCaptcha(page, conta.nome);
 }

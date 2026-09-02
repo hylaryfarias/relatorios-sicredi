@@ -44,10 +44,13 @@ async function clienteGmail() {
  * O corpo do e-mail costuma trazer "seu codigo e 123456"; pegamos esse numero.*/
 function achaCodigo(texto) {
   if (!texto) return null;
-  // prioriza numero perto da palavra "codigo"
-  const perto = texto.match(/c[oó]digo[^0-9]{0,40}(\d{4,8})/i);
+  // o e-mail da Fiserv costuma trazer so um numero de 6 digitos (o token)
+  const seis = texto.match(/\b(\d{6})\b/);
+  if (seis) return seis[1];
+  // senao, numero perto da palavra "codigo"/"token"
+  const perto = texto.match(/(?:c[oó]digo|token)[^0-9]{0,60}(\d{4,8})/i);
   if (perto) return perto[1];
-  const qualquer = texto.match(/\b(\d{6})\b/) || texto.match(/\b(\d{4,8})\b/);
+  const qualquer = texto.match(/\b(\d{4,8})\b/);
   return qualquer ? qualquer[1] : null;
 }
 
@@ -66,7 +69,7 @@ function corpoDoEmail(payload) {
 /* Espera chegar um e-mail NOVO com o codigo. "Novo" = recebido depois de
  * `desde` (momento em que o robo pediu o codigo), para nao pegar o codigo de
  * um login anterior. Fica tentando por ate `timeoutSeg` segundos. */
-export async function pegarCodigo({ desde, remetente = 'sicredi', timeoutSeg = 120 } = {}) {
+export async function pegarCodigo({ desde, remetente = 'fiserv.com', timeoutSeg = 120 } = {}) {
   const gmail = await clienteGmail();
   const inicio = Date.now();
   const limite = timeoutSeg * 1000;
