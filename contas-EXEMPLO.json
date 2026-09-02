@@ -1,0 +1,14 @@
+[
+  {
+    "nome": "Nome da loja para o arquivo",
+    "login": "usuario ou CNPJ que voce digita no portal",
+    "senha": "a senha do portal",
+    "email": "e-mail que recebe o codigo de acesso"
+  },
+  {
+    "nome": "Segunda loja",
+    "login": "...",
+    "senha": "...",
+    "email": "..."
+  }
+]

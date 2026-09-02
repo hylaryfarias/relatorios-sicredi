@@ -1,0 +1,15 @@
+{
+  "name": "relatorios-sicredi",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Baixa sozinho os relatorios de vendas e de antecipacao do portal Sicredi maquininhas, para todas as lojas, e guarda no GitHub.",
+  "type": "module",
+  "scripts": {
+    "baixar": "node scripts/baixar.js",
+    "autorizar-email": "node scripts/autorizar-gmail.js"
+  },
+  "dependencies": {
+    "googleapis": "^144.0.0",
+    "playwright": "^1.48.0"
+  }
+}

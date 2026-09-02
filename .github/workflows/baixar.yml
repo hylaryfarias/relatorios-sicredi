@@ -1,0 +1,60 @@
+name: Baixar relatorios Sicredi
+
+# Roda sozinho as 07h (horario de Brasilia) de segunda a sexta,
+# e tambem quando voce aperta o botao "Run workflow" na aba Actions.
+on:
+  schedule:
+    - cron: '0 10 * * 1-5'   # 10:00 UTC = 07:00 em Brasilia (UTC-3)
+  workflow_dispatch:          # botao manual
+
+# precisa poder gravar os arquivos baixados de volta no repositorio
+permissions:
+  contents: write
+
+# nao deixa duas execucoes ao mesmo tempo
+concurrency:
+  group: baixar-sicredi
+  cancel-in-progress: false
+
+jobs:
+  baixar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Pegar o codigo do repositorio
+        uses: actions/checkout@v4
+
+      - name: Preparar o Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Instalar as dependencias
+        run: npm install
+
+      - name: Instalar o navegador (Chromium)
+        run: npx playwright install --with-deps chromium
+
+      - name: Baixar os relatorios
+        env:
+          MODO: ci
+          SICREDI_CONTAS: ${{ secrets.SICREDI_CONTAS }}
+          GMAIL_CLIENT_ID: ${{ secrets.GMAIL_CLIENT_ID }}
+          GMAIL_CLIENT_SECRET: ${{ secrets.GMAIL_CLIENT_SECRET }}
+          GMAIL_REFRESH_TOKEN: ${{ secrets.GMAIL_REFRESH_TOKEN }}
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+        run: npm run baixar
+
+      - name: Guardar os arquivos no repositorio
+        if: always()
+        run: |
+          git config user.name  "robo-relatorios"
+          git config user.email "robo@gruporagga.com.br"
+          git add relatorios/ || true
+          if git diff --staged --quiet; then
+            echo "Nada novo para guardar."
+          else
+            git commit -m "Relatorios Sicredi de $(date +%d-%m-%Y)"
+            git push
+          fi

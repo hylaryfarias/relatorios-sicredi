@@ -1,0 +1,256 @@
+/* Robo que baixa os relatorios do portal Sicredi maquininhas.
+ *
+ * Para cada loja: entra com login e senha, pede o codigo por e-mail, le o
+ * codigo sozinho, e baixa dois relatorios dos ultimos 7 dias — Vendas
+ * (simplificado) e Antecipacao (detalhado por arranjo). Guarda tudo na pasta
+ * relatorios/.
+ *
+ * Dois modos:
+ *   MODO=local  -> abre o navegador na sua frente. Se aparecer o "prove que
+ *                  voce e humano" (CAPTCHA), ele PARA e espera VOCE resolver;
+ *                  depois segue sozinho.
+ *   MODO=ci     -> roda escondido no GitHub, sem ninguem. Se uma loja cair no
+ *                  CAPTCHA, ele pula essa loja e anota na lista "faltaram
+ *                  estas", para voce completar so as que faltaram.
+ *
+ * O robo NUNCA tenta resolver o CAPTCHA. Ou voce resolve (modo local), ou a
+ * loja fica para depois (modo ci). */
+
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { chromium } from 'playwright';
+import { pegarCodigo } from './gmail.js';
+
+const RAIZ = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
+const PASTA = path.join(RAIZ, 'relatorios');
+const PASTA_ERROS = path.join(RAIZ, 'erros');
+const MODO = (process.env.MODO || 'local').toLowerCase();
+const PORTAL = process.env.SICREDI_URL || 'https://novoportal.fiserv.com.br';
+
+/* -------- de onde vem a lista das lojas -------- */
+function carregarContas() {
+  if (process.env.SICREDI_CONTAS) {
+    try { return JSON.parse(process.env.SICREDI_CONTAS); }
+    catch { throw new Error('SICREDI_CONTAS existe mas nao e um JSON valido.'); }
+  }
+  const arq = path.join(RAIZ, 'contas.json');
+  if (fs.existsSync(arq)) return JSON.parse(fs.readFileSync(arq, 'utf8'));
+  throw new Error(
+    'Nao achei as lojas. No seu PC, crie o arquivo contas.json (veja o README). '
+    + 'No GitHub, cadastre o segredo SICREDI_CONTAS.');
+}
+
+const espera = (ms) => new Promise(r => setTimeout(r, ms));
+const hoje = () => new Date().toLocaleDateString('sv-SE'); // AAAA-MM-DD
+
+/* nome de arquivo seguro a partir do nome da loja */
+const limpo = (s) => String(s || 'loja').normalize('NFD').replace(/[̀-ͯ]/g, '')
+  .replace(/[^a-zA-Z0-9]+/g, '-').replace(/^-|-$/g, '').toLowerCase();
+
+/* -------- deteccao do CAPTCHA -------- */
+async function temCaptcha(page) {
+  // o "prove que voce e humano" da Radware traz um h-captcha e o texto abaixo
+  const marcas = ['.h-captcha', 'iframe[src*="hcaptcha"]', 'text=/make sure you.?re human/i',
+                  'text=/prove que voc/i'];
+  for (const m of marcas) {
+    try { if (await page.locator(m).first().isVisible({ timeout: 800 })) return true; }
+    catch { /* segue */ }
+  }
+  return false;
+}
+
+/* espera o humano resolver o CAPTCHA (so no modo local) */
+async function esperarHumano(page, loja) {
+  console.log(`\n  >>> ${loja}: apareceu o "prove que voce e humano".`);
+  console.log('  >>> Resolva o quebra-cabeca na janela do navegador. Eu espero.\n');
+  const ate = Date.now() + 5 * 60000; // 5 min
+  while (Date.now() < ate) {
+    if (!(await temCaptcha(page))) { console.log(`  >>> ${loja}: obrigado, segui.\n`); return true; }
+    await espera(2000);
+  }
+  throw new Error('CAPTCHA nao resolvido em 5 minutos.');
+}
+
+async function lidarCaptcha(page, loja) {
+  if (!(await temCaptcha(page))) return true;
+  if (MODO === 'local') return esperarHumano(page, loja);
+  throw new Error('CAPTCHA (modo automatico nao resolve — fica para voce completar).');
+}
+
+/* -------- clicar por texto, tolerante a variacoes -------- */
+async function clicar(page, textos, { timeout = 15000 } = {}) {
+  const lista = Array.isArray(textos) ? textos : [textos];
+  const inicio = Date.now();
+  while (Date.now() - inicio < timeout) {
+    for (const t of lista) {
+      const alvo = t instanceof RegExp
+        ? page.getByText(t).first()
+        : page.getByRole('button', { name: t }).first();
+      try { if (await alvo.isVisible({ timeout: 500 })) { await alvo.click(); return true; } }
+      catch { /* tenta o proximo */ }
+      // fallback: qualquer elemento clicavel com esse texto
+      try {
+        const q = page.getByText(t instanceof RegExp ? t : new RegExp(`^\\s*${t}\\s*$`, 'i')).first();
+        if (await q.isVisible({ timeout: 500 })) { await q.click(); return true; }
+      } catch { /* tenta o proximo */ }
+    }
+    await espera(600);
+  }
+  throw new Error(`Nao achei para clicar: ${lista.map(String).join(' / ')}`);
+}
+
+/* -------- login + codigo por e-mail -------- */
+async function entrar(page, conta) {
+  await page.goto(PORTAL, { waitUntil: 'domcontentloaded' });
+  await espera(2500);
+  await lidarCaptcha(page, conta.nome);
+
+  // usuario e senha (campos por rotulo; cai para os primeiros inputs se preciso)
+  const usuario = page.getByLabel(/CNPJ|CPF|usu/i).first();
+  const senha = page.getByLabel(/senha/i).first();
+  try { await usuario.fill(conta.login, { timeout: 8000 }); }
+  catch { await page.locator('input:not([type=password])').first().fill(conta.login); }
+  try { await senha.fill(conta.senha, { timeout: 8000 }); }
+  catch { await page.locator('input[type=password]').first().fill(conta.senha); }
+
+  const marcaTempo = Date.now(); // para so pegar o e-mail que chegar depois daqui
+  await clicar(page, ['Entrar', /entrar/i]);
+  await espera(2500);
+  await lidarCaptcha(page, conta.nome);
+
+  // escolher receber por e-mail
+  await clicar(page, [/receber por e.?mail/i, /e.?mail/i], { timeout: 20000 });
+  console.log(`  ${conta.nome}: pedi o codigo por e-mail, lendo a caixa...`);
+
+  // ler o codigo e digitar
+  const codigo = await pegarCodigo({ desde: marcaTempo, remetente: 'sicredi', timeoutSeg: 150 });
+  console.log(`  ${conta.nome}: codigo recebido, digitando.`);
+  // campo de codigo: pode ser um input unico ou varios quadradinhos
+  const campos = page.locator('input[inputmode="numeric"], input[type="tel"], input[maxlength="1"]');
+  const n = await campos.count();
+  if (n > 1) { for (let i = 0; i < Math.min(n, codigo.length); i++) await campos.nth(i).fill(codigo[i]); }
+  else {
+    const uni = page.getByLabel(/c[oó]digo/i).first();
+    try { await uni.fill(codigo, { timeout: 5000 }); }
+    catch { await page.locator('input').last().fill(codigo); }
+  }
+  await clicar(page, [/confirmar|continuar|entrar|acessar|validar/i], { timeout: 12000 }).catch(() => {});
+  await espera(3500);
+  await lidarCaptcha(page, conta.nome);
+}
+
+/* -------- baixar um relatorio (recebe as etapas de clique) -------- */
+async function baixar(page, conta, { titulo, etapas, arquivoBase }) {
+  console.log(`  ${conta.nome}: baixando ${titulo}...`);
+  for (const etapa of etapas) {
+    await clicar(page, etapa.textos, { timeout: etapa.timeout || 15000 });
+    await espera(etapa.espera || 1200);
+    await lidarCaptcha(page, conta.nome);
+  }
+  // o "Gerar arquivo" dispara o download
+  const [download] = await Promise.all([
+    page.waitForEvent('download', { timeout: 60000 }),
+    clicar(page, [/gerar arquivo/i], { timeout: 15000 }),
+  ]);
+  const sugerido = download.suggestedFilename() || `${arquivoBase}.xlsx`;
+  const ext = path.extname(sugerido) || '.xlsx';
+  const destino = path.join(PASTA, `${arquivoBase}_${hoje()}${ext}`);
+  await download.saveAs(destino);
+  console.log(`  ${conta.nome}: salvo ${path.basename(destino)}`);
+  return destino;
+}
+
+/* -------- uma loja, inteira -------- */
+async function processarConta(browser, conta) {
+  const ctx = await browser.newContext({ acceptDownloads: true });
+  const page = await ctx.newPage();
+  const feitos = [];
+  try {
+    await entrar(page, conta);
+
+    // VENDAS — Relatorio simplificado, ultimos 7 dias
+    await clicar(page, ['Vendas', /^vendas/i], { timeout: 20000 });
+    await espera(1500);
+    await clicar(page, [/relat[oó]rio de vendas/i], { timeout: 8000 }).catch(() => {});
+    await espera(1500);
+    feitos.push(await baixar(page, conta, {
+      titulo: 'Vendas (7 dias, simplificado)',
+      arquivoBase: `vendas_${limpo(conta.nome)}`,
+      etapas: [
+        { textos: [/ltimos 7 dias/i], espera: 1500 },
+        { textos: [/exportar relat[oó]rio|exportar/i], espera: 1500 },
+        { textos: [/relat[oó]rio simplificado/i], espera: 800 },
+      ],
+    }));
+
+    // ANTECIPACAO — Relatorio detalhado por arranjo, ultimos 7 dias
+    await clicar(page, ['Antecipação', /antecipa/i], { timeout: 20000 });
+    await espera(1500);
+    await clicar(page, [/relat[oó]rio de antecipa/i], { timeout: 10000 });
+    await espera(1500);
+    feitos.push(await baixar(page, conta, {
+      titulo: 'Antecipacao (7 dias, detalhado)',
+      arquivoBase: `antecipacao_${limpo(conta.nome)}`,
+      etapas: [
+        { textos: [/ltimos 7 dias/i], espera: 1200 },
+        { textos: [/exportar/i], espera: 1500 },
+        { textos: [/relat[oó]rio detalhado/i], espera: 800 },
+      ],
+    }));
+
+    await ctx.close();
+    return { conta: conta.nome, ok: true, arquivos: feitos };
+  } catch (e) {
+    // print da tela para entender o que travou
+    try {
+      fs.mkdirSync(PASTA_ERROS, { recursive: true });
+      await page.screenshot({ path: path.join(PASTA_ERROS, `${limpo(conta.nome)}_${hoje()}.png`), fullPage: true });
+    } catch { /* sem print */ }
+    await ctx.close();
+    const captcha = /CAPTCHA/i.test(e.message);
+    return { conta: conta.nome, ok: false, captcha, erro: e.message, arquivos: feitos };
+  }
+}
+
+/* -------- roda tudo -------- */
+async function main() {
+  const contas = carregarContas();
+  fs.mkdirSync(PASTA, { recursive: true });
+  console.log(`\nModo: ${MODO} | Lojas: ${contas.length}\n`);
+
+  const browser = await chromium.launch({
+    headless: MODO === 'ci',
+    slowMo: MODO === 'local' ? 120 : 0,
+  });
+
+  const resultados = [];
+  for (const conta of contas) {
+    if (!conta.login || !conta.senha) {
+      resultados.push({ conta: conta.nome || '(sem nome)', ok: false, erro: 'faltou login ou senha' });
+      continue;
+    }
+    console.log(`\n== ${conta.nome} ==`);
+    resultados.push(await processarConta(browser, conta));
+    await espera(2500 + Math.random() * 2500); // pausa entre lojas, sem pressa
+  }
+  await browser.close();
+
+  // resumo final
+  const ok = resultados.filter(r => r.ok);
+  const captcha = resultados.filter(r => !r.ok && r.captcha);
+  const falhou = resultados.filter(r => !r.ok && !r.captcha);
+  console.log('\n=================== RESUMO ===================');
+  console.log(`Baixaram certo: ${ok.length} de ${resultados.length}`);
+  if (captcha.length) console.log(`Faltaram (CAPTCHA, complete voce): ${captcha.map(r => r.conta).join(', ')}`);
+  if (falhou.length) falhou.forEach(r => console.log(`Erro em ${r.conta}: ${r.erro}`));
+  console.log('=============================================\n');
+
+  fs.writeFileSync(path.join(PASTA, '_ultima-execucao.json'),
+    JSON.stringify({ quando: new Date().toISOString(), modo: MODO, resultados }, null, 2));
+
+  // no GitHub, falha o passo so se NINGUEM baixou (para aparecer o aviso)
+  if (MODO === 'ci' && ok.length === 0) process.exit(1);
+}
+
+main().catch(e => { console.error('\nParou:', e.message, '\n'); process.exit(1); });

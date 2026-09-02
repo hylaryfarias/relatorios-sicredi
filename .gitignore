@@ -1,0 +1,22 @@
+# Nunca subir para o GitHub:
+
+# As senhas das lojas (ficam só no seu PC)
+contas.json
+
+# A autorizacao do e-mail (chave que le os codigos)
+token-email.json
+
+# Segredos soltos
+.env
+*.env
+
+# Coisas do Node
+node_modules/
+
+# Prints de erro que o robo tira quando algo trava
+erros/
+*.png
+
+# Lixo do sistema
+.DS_Store
+Thumbs.db
