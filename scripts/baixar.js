@@ -41,7 +41,26 @@ function carregarContas() {
     + 'No GitHub, cadastre o segredo SICREDI_CONTAS.');
 }
 
+const VERSAO = 'v5 (digitacao reforcada)';
 const espera = (ms) => new Promise(r => setTimeout(r, ms));
+
+/* Digita LETRA POR LETRA e ainda reforca com os eventos nativos que os portais
+ * feitos em framework (React/OutSystems) escutam para habilitar o botao. So
+ * "colar" o valor nao dispara esses eventos e o botao continua cinza. */
+async function digitarReal(campo, valor) {
+  await campo.click();
+  await campo.fill('');
+  await campo.pressSequentially(valor, { delay: 55 });
+  await campo.evaluate((el, v) => {
+    const proto = el instanceof HTMLTextAreaElement
+      ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+    const set = Object.getOwnPropertyDescriptor(proto, 'value').set;
+    set.call(el, v);
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+    el.dispatchEvent(new Event('blur', { bubbles: true }));
+  }, valor);
+}
 const hoje = () => new Date().toLocaleDateString('sv-SE'); // AAAA-MM-DD
 
 /* nome de arquivo seguro a partir do nome da loja */
@@ -122,14 +141,10 @@ async function entrar(page, conta) {
   const campoSenha = await senha.isVisible({ timeout: 3000 }).catch(() => false)
     ? senha : page.locator('input[type=password]').first();
 
-  await campoUser.click();
-  await campoUser.fill('');
-  await campoUser.pressSequentially(conta.login, { delay: 45 });
-  await campoSenha.click();
-  await campoSenha.fill('');
-  await campoSenha.pressSequentially(conta.senha, { delay: 45 });
+  await digitarReal(campoUser, conta.login);
+  await digitarReal(campoSenha, conta.senha);
   await campoSenha.press('Tab'); // dispara a validacao que libera o botao
-  await espera(600);
+  await espera(800);
 
   const marcaTempo = Date.now(); // para so pegar o e-mail que chegar depois daqui
   // clicar Entrar. O click do Playwright ESPERA o botao ficar habilitado (verde)
@@ -238,7 +253,8 @@ async function processarConta(browser, conta) {
 async function main() {
   const contas = carregarContas();
   fs.mkdirSync(PASTA, { recursive: true });
-  console.log(`\nModo: ${MODO} | Lojas: ${contas.length}\n`);
+  console.log(`\n=== Robo Sicredi ${VERSAO} ===`);
+  console.log(`Modo: ${MODO} | Lojas: ${contas.length}\n`);
 
   const browser = await chromium.launch({
     headless: MODO === 'ci',
