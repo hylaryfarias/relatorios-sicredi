@@ -44,26 +44,37 @@ async function clienteGmail() {
  * O corpo do e-mail costuma trazer "seu codigo e 123456"; pegamos esse numero.*/
 function achaCodigo(texto) {
   if (!texto) return null;
-  // o e-mail da Fiserv costuma trazer so um numero de 6 digitos (o token)
-  const seis = texto.match(/\b(\d{6})\b/);
-  if (seis) return seis[1];
-  // senao, numero perto da palavra "codigo"/"token"
-  const perto = texto.match(/(?:c[oó]digo|token)[^0-9]{0,60}(\d{4,8})/i);
+  // tira tags HTML e, principalmente, as cores hex (#666666) que enganam a
+  // busca — foi uma cor de texto que virou "codigo 666666" por engano
+  let t = texto.replace(/<[^>]+>/g, ' ')
+    .replace(/#[0-9a-fA-F]{3,8}\b/g, ' ')
+    .replace(/&nbsp;/gi, ' ').replace(/&amp;/gi, '&');
+  // 1) numero de 6 digitos logo depois de "codigo"/"verifica"/"token"
+  const perto = t.match(/(?:c[oó]digo|verifica|token)[^0-9]{0,80}(\d{6})(?!\d)/i);
   if (perto) return perto[1];
-  const qualquer = texto.match(/\b(\d{4,8})\b/);
-  return qualquer ? qualquer[1] : null;
+  // 2) qualquer numero isolado de 6 digitos (nao colado em mais digitos)
+  const seis = t.match(/(?<!\d)(\d{6})(?!\d)/);
+  if (seis) return seis[1];
+  const q = t.match(/(?<!\d)(\d{4,8})(?!\d)/);
+  return q ? q[1] : null;
 }
 
 function corpoDoEmail(payload) {
   if (!payload) return '';
-  let txt = '';
-  const decodifica = (d) => Buffer.from(d.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8');
+  const dec = (d) => Buffer.from(d.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8');
+  // guarda texto puro e HTML separados: o texto puro nao tem cores para enganar
+  let plano = '', html = '';
   const anda = (p) => {
-    if (p.body && p.body.data) txt += ' ' + decodifica(p.body.data);
+    const mt = p.mimeType || '';
+    if (p.body && p.body.data) {
+      if (mt.includes('text/plain')) plano += ' ' + dec(p.body.data);
+      else if (mt.includes('text/html')) html += ' ' + dec(p.body.data);
+      else plano += ' ' + dec(p.body.data);
+    }
     (p.parts || []).forEach(anda);
   };
   anda(payload);
-  return txt;
+  return plano.trim() ? plano : html; // prefere o texto puro
 }
 
 /* Espera chegar um e-mail NOVO com o codigo. "Novo" = recebido depois de

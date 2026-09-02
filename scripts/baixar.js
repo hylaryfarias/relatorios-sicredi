@@ -41,7 +41,7 @@ function carregarContas() {
     + 'No GitHub, cadastre o segredo SICREDI_CONTAS.');
 }
 
-const VERSAO = 'v6 (codigo por email)';
+const VERSAO = 'v7 (codigo sem cor)';
 const espera = (ms) => new Promise(r => setTimeout(r, ms));
 
 /* Digita LETRA POR LETRA e ainda reforca com os eventos nativos que os portais
