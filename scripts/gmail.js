@@ -17,22 +17,25 @@ async function clienteGmail() {
   const segredo = process.env.GMAIL_CLIENT_SECRET;
   let refresh = process.env.GMAIL_REFRESH_TOKEN;
 
-  if (!refresh) {
+  let id2 = id, segredo2 = segredo;
+  if (!refresh || !id2 || !segredo2) {
     // no PC: le do arquivo salvo pela autorizacao
     try {
       const fs = await import('node:fs');
-      const url = new URL('../token-email.json', import.meta.url);
+      const url = new URL('../credenciais-google.json', import.meta.url);
       const j = JSON.parse(fs.readFileSync(url, 'utf8'));
-      refresh = j.refresh_token;
+      refresh = refresh || j.refresh_token;
+      id2 = id2 || j.client_id;
+      segredo2 = segredo2 || j.client_secret;
     } catch { /* segue: o erro abaixo explica */ }
   }
-  if (!id || !segredo || !refresh) {
+  if (!id2 || !segredo2 || !refresh) {
     throw new Error(
-      'Falta a autorizacao do e-mail. No seu PC, rode uma vez: npm run autorizar-email. '
+      'Falta a autorizacao do e-mail. No seu PC, rode uma vez o AUTORIZAR-EMAIL-WINDOWS.bat. '
       + 'No GitHub, cadastre GMAIL_CLIENT_ID, GMAIL_CLIENT_SECRET e GMAIL_REFRESH_TOKEN.');
   }
 
-  const oauth = new google.auth.OAuth2(id, segredo, 'http://localhost:3000/auth/callback');
+  const oauth = new google.auth.OAuth2(id2, segredo2, 'http://localhost:3000/auth/callback');
   oauth.setCredentials({ refresh_token: refresh });
   return google.gmail({ version: 'v1', auth: oauth });
 }

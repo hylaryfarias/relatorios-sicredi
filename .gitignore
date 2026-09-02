@@ -3,8 +3,9 @@
 # As senhas das lojas (ficam só no seu PC)
 contas.json
 
-# A autorizacao do e-mail (chave que le os codigos)
+# A autorizacao do e-mail (chaves que leem os codigos)
 token-email.json
+credenciais-google.json
 
 # Segredos soltos
 .env
