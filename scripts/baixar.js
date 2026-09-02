@@ -26,7 +26,7 @@ const RAIZ = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const PASTA = path.join(RAIZ, 'relatorios');
 const PASTA_ERROS = path.join(RAIZ, 'erros');
 const MODO = (process.env.MODO || 'local').toLowerCase();
-const PORTAL = process.env.SICREDI_URL || 'https://novoportal.fiserv.com.br';
+const PORTAL = process.env.SICREDI_URL || 'https://www.maquinasicredi.com.br/Login';
 
 /* -------- de onde vem a lista das lojas -------- */
 function carregarContas() {
