@@ -112,18 +112,31 @@ async function entrar(page, conta) {
   await espera(2500);
   await lidarCaptcha(page, conta.nome);
 
-  // usuario e senha (campos por rotulo; cai para os primeiros inputs se preciso)
+  // Digitar LETRA POR LETRA. O botao Entrar fica cinza (desabilitado) ate o
+  // portal registrar a digitacao de verdade; um "colar" de uma vez nao liga o
+  // botao. Por isso usamos pressSequentially (teclas reais), nao fill.
   const usuario = page.getByLabel(/CNPJ|CPF|usu/i).first();
   const senha = page.getByLabel(/senha/i).first();
-  try { await usuario.fill(conta.login, { timeout: 8000 }); }
-  catch { await page.locator('input:not([type=password])').first().fill(conta.login); }
-  try { await senha.fill(conta.senha, { timeout: 8000 }); }
-  catch { await page.locator('input[type=password]').first().fill(conta.senha); }
+  const campoUser = await usuario.isVisible({ timeout: 8000 }).catch(() => false)
+    ? usuario : page.locator('input:not([type=password])').first();
+  const campoSenha = await senha.isVisible({ timeout: 3000 }).catch(() => false)
+    ? senha : page.locator('input[type=password]').first();
+
+  await campoUser.click();
+  await campoUser.fill('');
+  await campoUser.pressSequentially(conta.login, { delay: 45 });
+  await campoSenha.click();
+  await campoSenha.fill('');
+  await campoSenha.pressSequentially(conta.senha, { delay: 45 });
+  await campoSenha.press('Tab'); // dispara a validacao que libera o botao
+  await espera(600);
 
   const marcaTempo = Date.now(); // para so pegar o e-mail que chegar depois daqui
-  // enviar o login: tenta o botao Entrar; se nao achar, aperta Enter no campo de senha
-  const clicou = await clicar(page, ['Entrar', /^entrar$/i], { timeout: 8000 }).catch(() => false);
-  if (!clicou) { console.log(`  ${conta.nome}: nao achei o botao, apertando Enter.`); await senha.press('Enter').catch(() => {}); }
+  // clicar Entrar. O click do Playwright ESPERA o botao ficar habilitado (verde)
+  // antes de clicar; se por algum motivo nao achar, tenta os outros jeitos.
+  const btnEntrar = page.getByRole('button', { name: /entrar/i }).first();
+  try { await btnEntrar.click({ timeout: 12000 }); }
+  catch { await clicar(page, ['Entrar', /^entrar$/i], { timeout: 8000 }); }
   await espera(2500);
   await lidarCaptcha(page, conta.nome);
 
