@@ -1,0 +1,13 @@
+{
+  "quando": "2026-09-04T14:27:49.479Z",
+  "modo": "ci",
+  "resultados": [
+    {
+      "conta": "BIGGS 13",
+      "ok": false,
+      "captcha": true,
+      "erro": "CAPTCHA (modo automatico nao resolve — fica para voce completar).",
+      "arquivos": []
+    }
+  ]
+}
