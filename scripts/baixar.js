@@ -28,20 +28,34 @@ const PASTA_ERROS = path.join(RAIZ, 'erros');
 const MODO = (process.env.MODO || 'local').toLowerCase();
 const PORTAL = process.env.SICREDI_URL || 'https://www.maquinasicredi.com.br/Login';
 
-/* -------- de onde vem a lista das lojas -------- */
+/* -------- de onde vem a lista das lojas --------
+   Aceita dois formatos:
+   1) uma lista: [{nome, login, senha, email}, ...]
+   2) senha/e-mail uma vez so (quando sao iguais em todas as lojas):
+      { "senha": "...", "email": "...", "lojas": [{nome, login}, ...] }
+   No formato 2, cada loja herda a senha e o e-mail comuns (mas pode ter os
+   seus proprios, se um dia precisar). */
+function normalizaContas(parsed) {
+  if (Array.isArray(parsed)) return parsed;
+  const { senha, email, lojas } = parsed || {};
+  if (!Array.isArray(lojas)) {
+    throw new Error('formato invalido: esperado uma lista, ou { senha, email, lojas: [...] }');
+  }
+  return lojas.map(l => ({ ...l, senha: l.senha || senha, email: l.email || email }));
+}
 function carregarContas() {
   if (process.env.SICREDI_CONTAS) {
-    try { return JSON.parse(process.env.SICREDI_CONTAS); }
-    catch { throw new Error('SICREDI_CONTAS existe mas nao e um JSON valido.'); }
+    try { return normalizaContas(JSON.parse(process.env.SICREDI_CONTAS)); }
+    catch (e) { throw new Error('SICREDI_CONTAS invalido: ' + e.message); }
   }
   const arq = path.join(RAIZ, 'contas.json');
-  if (fs.existsSync(arq)) return JSON.parse(fs.readFileSync(arq, 'utf8'));
+  if (fs.existsSync(arq)) return normalizaContas(JSON.parse(fs.readFileSync(arq, 'utf8')));
   throw new Error(
     'Nao achei as lojas. No seu PC, crie o arquivo contas.json (veja o README). '
     + 'No GitHub, cadastre o segredo SICREDI_CONTAS.');
 }
 
-const VERSAO = 'v7 (codigo sem cor)';
+const VERSAO = 'v8 (senha unica)';
 const espera = (ms) => new Promise(r => setTimeout(r, ms));
 
 /* Digita LETRA POR LETRA e ainda reforca com os eventos nativos que os portais
