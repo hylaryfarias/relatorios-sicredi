@@ -1,11 +1,11 @@
 name: Baixar relatorios Sicredi
 
-# Roda sozinho as 07h (horario de Brasilia) de segunda a sexta,
-# e tambem quando voce aperta o botao "Run workflow" na aba Actions.
+# O agendamento automatico foi DESLIGADO: rodando do servidor do GitHub, o
+# portal do Sicredi barra com o "prove que voce e humano" (CAPTCHA), que so a
+# pessoa resolve. O caminho que funciona e rodar no PC (BAIXAR-WINDOWS.bat).
+# Fica so o botao manual, para eventual reteste.
 on:
-  schedule:
-    - cron: '0 10 * * 1-5'   # 10:00 UTC = 07:00 em Brasilia (UTC-3)
-  workflow_dispatch:          # botao manual
+  workflow_dispatch:          # botao manual (so para teste)
 
 # precisa poder gravar os arquivos baixados de volta no repositorio
 permissions:
