@@ -55,7 +55,7 @@ function carregarContas() {
     + 'No GitHub, cadastre o segredo SICREDI_CONTAS.');
 }
 
-const VERSAO = 'v8 (senha unica)';
+const VERSAO = 'v9 (antecipacao opcional + filtro)';
 const espera = (ms) => new Promise(r => setTimeout(r, ms));
 
 /* Digita LETRA POR LETRA e ainda reforca com os eventos nativos que os portais
@@ -243,23 +243,31 @@ async function processarConta(browser, conta) {
       ],
     }));
 
-    // ANTECIPACAO — Relatorio detalhado por arranjo, ultimos 7 dias
-    await clicar(page, ['Antecipação', /antecipa/i], { timeout: 20000 });
-    await espera(1500);
-    await clicar(page, [/relat[oó]rio de antecipa/i], { timeout: 10000 });
-    await espera(1500);
-    feitos.push(await baixar(page, conta, {
-      titulo: 'Antecipacao (7 dias, detalhado)',
-      arquivoBase: `antecipacao_${limpo(conta.nome)}`,
-      etapas: [
-        { textos: [/ltimos 7 dias/i], espera: 1200 },
-        { textos: [/exportar/i], espera: 1500 },
-        { textos: [/relat[oó]rio detalhado/i], espera: 800 },
-      ],
-    }));
+    // ANTECIPACAO — OPCIONAL: nem toda loja tem antecipacao contratada. Se a
+    // aba/relatorio nao existir, pula e segue (o Vendas ja foi baixado); nao
+    // derruba a loja inteira por causa disso.
+    let semAntecip = false;
+    try {
+      await clicar(page, ['Antecipação', /antecipa/i], { timeout: 15000 });
+      await espera(1500);
+      await clicar(page, [/relat[oó]rio de antecipa/i], { timeout: 8000 });
+      await espera(1500);
+      feitos.push(await baixar(page, conta, {
+        titulo: 'Antecipacao (7 dias, detalhado)',
+        arquivoBase: `antecipacao_${limpo(conta.nome)}`,
+        etapas: [
+          { textos: [/ltimos 7 dias/i], espera: 1200 },
+          { textos: [/exportar/i], espera: 1500 },
+          { textos: [/relat[oó]rio detalhado/i], espera: 800 },
+        ],
+      }));
+    } catch (e) {
+      semAntecip = true;
+      console.log(`  ${conta.nome}: sem relatorio de antecipacao (pulei) — provavelmente a loja nao tem antecipacao.`);
+    }
 
     await ctx.close();
-    return { conta: conta.nome, ok: true, arquivos: feitos };
+    return { conta: conta.nome, ok: true, semAntecip, arquivos: feitos };
   } catch (e) {
     // print da tela para entender o que travou
     try {
@@ -274,10 +282,19 @@ async function processarConta(browser, conta) {
 
 /* -------- roda tudo -------- */
 async function main() {
-  const contas = carregarContas();
+  let contas = carregarContas();
+  /* Se passar nomes na linha de comando, roda SO essas lojas.
+     Ex.: node scripts\\baixar.js 02 isa02  -> refaz so a 02 e a isa02. */
+  const filtro = process.argv.slice(2).map(s => s.toLowerCase());
+  if (filtro.length) {
+    contas = contas.filter(c => filtro.includes(String(c.nome).toLowerCase())
+                             || filtro.includes(String(c.login).toLowerCase()));
+    if (!contas.length) { console.error(`\nNenhuma loja bateu com: ${filtro.join(', ')}\n`); process.exit(1); }
+  }
   fs.mkdirSync(PASTA, { recursive: true });
   console.log(`\n=== Robo Sicredi ${VERSAO} ===`);
-  console.log(`Modo: ${MODO} | Lojas: ${contas.length}\n`);
+  console.log(`Modo: ${MODO} | Lojas: ${contas.length}`
+    + (filtro.length ? ` (so: ${contas.map(c => c.nome).join(', ')})` : '') + '\n');
 
   const browser = await chromium.launch({
     headless: MODO === 'ci',
