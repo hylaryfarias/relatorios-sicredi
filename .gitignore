@@ -21,3 +21,7 @@ erros/
 # Lixo do sistema
 .DS_Store
 Thumbs.db
+
+# Credenciais do banco (so no seu PC)
+banco.json
+extratos/
