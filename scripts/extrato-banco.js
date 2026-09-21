@@ -28,7 +28,7 @@ const PASTA = path.join(RAIZ, 'extratos');
 const PERFIL = path.join(RAIZ, 'perfil-chrome'); // perfil fixo do navegador (fica so no PC)
 const URL_BANCO = process.env.BANCO_URL
   || 'https://ibpj.sicredi.com.br/ib-view/loginpj/preauth.html';
-const VERSAO = 'extrato v14 (mostra o tempo)';
+const VERSAO = 'extrato v15 (download robusto a aba fechada)';
 const espera = (ms) => new Promise(r => setTimeout(r, ms));
 const hoje = () => new Date().toLocaleDateString('sv-SE');
 /* duracao amigavel: "42s" ou "3m 07s" */
@@ -403,14 +403,22 @@ async function selecionarContaModal(page, c) {
 }
 
 async function baixarPlanilha(page, conta) {
-  const [download] = await Promise.all([
-    page.waitForEvent('download', { timeout: 60000 }),
-    clicar(page, [/gerar planilha/i, /planilha/i, /exportar/i], { timeout: 15000 }),
-  ]);
+  /* escuta o download no CONTEXTO (pega tambem se abrir em outra aba/popup) */
+  const dlPromise = page.context().waitForEvent('download', { timeout: 60000 });
+  await clicar(page, [/gerar planilha/i, /planilha/i, /exportar/i], { timeout: 15000 });
+  const download = await dlPromise;
   const sugerido = download.suggestedFilename() || 'extrato.xls';
   const ext = path.extname(sugerido) || '.xls';
   const destino = path.join(PASTA, `extrato_${limpo(conta.label)}_${hoje()}${ext}`);
-  await download.saveAs(destino);
+  try {
+    await download.saveAs(destino);
+  } catch (e) {
+    /* se a pagina/aba fechou durante o saveAs, o arquivo ja pode estar no
+       diretorio temporario de downloads — copia de la */
+    const tmp = await download.path().catch(() => null);
+    if (tmp) fs.copyFileSync(tmp, destino);
+    else throw e;
+  }
   return path.basename(destino);
 }
 
