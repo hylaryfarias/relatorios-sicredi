@@ -27,7 +27,7 @@ const RAIZ = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const PASTA = path.join(RAIZ, 'extratos');
 const URL_BANCO = process.env.BANCO_URL
   || 'https://ibpj.sicredi.com.br/ib-view/loginpj/preauth.html';
-const VERSAO = 'extrato v4 (todas as contas, HTTP/1.1)';
+const VERSAO = 'extrato v5 (todas as contas, teclado por texto)';
 const espera = (ms) => new Promise(r => setTimeout(r, ms));
 const hoje = () => new Date().toLocaleDateString('sv-SE');
 
@@ -81,15 +81,15 @@ async function clicar(page, textos, { timeout = 15000 } = {}) {
   throw new Error(`Nao achei para clicar: ${lista.map(String).join(' / ')}`);
 }
 
-/* senha pelo teclado embaralhado: para cada digito, clica o botao que o contem.
-   Rele a cada digito porque a posicao pode mudar. */
+/* senha pelo teclado embaralhado do Sicredi: cada tecla cobre DOIS numeros
+   ("1 ou 3", "9 ou 0", ...). Para cada digito da senha, clica a tecla que o
+   contem. Busca pelo TEXTO (qualquer tag — as teclas sao <div>/<a>, nao
+   <button>), casando so a tecla cujo texto inteiro e "X ou Y". */
 async function senhaPeloTeclado(page, senha) {
   for (const d of senha) {
-    const botao = page.locator('button, a, [role=button], input[type=button]')
-      .filter({ hasText: /\d\s*ou\s*\d/i })
-      .filter({ hasText: new RegExp(`(^|\\D)${d}(\\D|$)`) })
-      .first();
-    await botao.click({ timeout: 8000 });
+    const re = new RegExp(`^\\s*(\\d\\s*ou\\s*${d}|${d}\\s*ou\\s*\\d)\\s*$`, 'i');
+    const tecla = page.getByText(re).first();
+    await tecla.click({ timeout: 8000 });
     await espera(400);
   }
 }
