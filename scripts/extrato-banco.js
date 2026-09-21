@@ -28,7 +28,7 @@ const PASTA = path.join(RAIZ, 'extratos');
 const PERFIL = path.join(RAIZ, 'perfil-chrome'); // perfil fixo do navegador (fica so no PC)
 const URL_BANCO = process.env.BANCO_URL
   || 'https://ibpj.sicredi.com.br/ib-view/loginpj/preauth.html';
-const VERSAO = 'extrato v15 (download robusto a aba fechada)';
+const VERSAO = 'extrato v16 (Ver Mais insistente + filtro corrigido)';
 const espera = (ms) => new Promise(r => setTimeout(r, ms));
 const hoje = () => new Date().toLocaleDateString('sv-SE');
 /* duracao amigavel: "42s" ou "3m 07s" */
@@ -212,20 +212,27 @@ async function selecionarConta(page, sw, conta) {
    essa janela, le a tabela inteira e depois seleciona cada conta clicando na
    Razao social. */
 async function abrirPesquisarContas(page) {
-  const jaAberto = () => page.getByText(/pesquisar contas/i).first().isVisible({ timeout: 800 }).catch(() => false);
+  const jaAberto = async () =>
+    (await page.getByText(/pesquisar contas/i).first().isVisible({ timeout: 800 }).catch(() => false))
+    || /pesquisarcontas|vermais|selconta/i.test(page.url());
   if (await jaAberto()) return true;
 
   /* O "Ver Mais" e um <option onclick="urlVerMais();"> dentro do <select
      id=opcoesCombo>. onclick em <option> nao dispara de forma confiavel, entao
-     chamamos a funcao do proprio site direto — e o jeito estavel de abrir a
-     janela "Pesquisar Contas" com TODAS as contas. */
-  try {
+     chamamos a funcao do proprio site direto. Logo apos o login a funcao pode
+     ainda nao existir, entao insiste: espera a funcao aparecer, chama, e da
+     tempo da janela "Pesquisar Contas" carregar. */
+  for (let i = 0; i < 4; i++) {
     const chamou = await page.evaluate(() => {
       if (typeof urlVerMais === 'function') { urlVerMais(); return true; }
       return false;
-    });
-    if (chamou) { await espera(2500); if (await jaAberto()) return true; }
-  } catch { /* segue para os cliques */ }
+    }).catch(() => false);
+    if (chamou) {
+      for (let w = 0; w < 8; w++) { await espera(1000); if (await jaAberto()) return true; }
+    } else {
+      await espera(1500); // a funcao/pagina ainda nao carregou; espera
+    }
+  }
 
   const clicarVerMais = async () => {
     const l = page.getByText(/^\s*ver mais\s*$/i).first();
@@ -476,8 +483,16 @@ async function main() {
        node scripts\\extrato-banco.js 71532 63896  (essas duas) */
     const filtros = process.argv.slice(2).map(s => s.replace(/\D/g, '')).filter(Boolean);
     if (filtros.length) {
-      contas = contas.filter(c => filtros.some(f => c.conta.replace(/\D/g, '').includes(f)));
-      console.log(`Filtrando para ${contas.length} conta(s): ${contas.map(c => c.label).join(', ')}`);
+      /* casa pelo numero da conta — usa label quando nao ha campo "conta"
+         (modo favoritas), sem quebrar */
+      const digitos = c => String(c.conta || c.label || '').replace(/\D/g, '');
+      contas = contas.filter(c => filtros.some(f => digitos(c).includes(f)));
+      if (!contas.length) {
+        console.log(`Nenhuma das contas pedidas (${filtros.join(', ')}) esta na lista${modo === 'todas' ? '' : ' de favoritas'}.`
+          + (modo === 'todas' ? '' : ' O "Ver Mais" nao abriu, entao so as 5 favoritas foram lidas — rode de novo para pegar a lista completa.'));
+      } else {
+        console.log(`Filtrando para ${contas.length} conta(s): ${contas.map(c => c.label).join(', ')}`);
+      }
     }
     console.log('');
 
