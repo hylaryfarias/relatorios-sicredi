@@ -28,9 +28,11 @@ const PASTA = path.join(RAIZ, 'extratos');
 const PERFIL = path.join(RAIZ, 'perfil-chrome'); // perfil fixo do navegador (fica so no PC)
 const URL_BANCO = process.env.BANCO_URL
   || 'https://ibpj.sicredi.com.br/ib-view/loginpj/preauth.html';
-const VERSAO = 'extrato v13 (selecao via selconta + rodar so algumas)';
+const VERSAO = 'extrato v14 (mostra o tempo)';
 const espera = (ms) => new Promise(r => setTimeout(r, ms));
 const hoje = () => new Date().toLocaleDateString('sv-SE');
+/* duracao amigavel: "42s" ou "3m 07s" */
+const dur = (ms) => { const s = Math.round(ms / 1000); return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, '0')}s`; };
 
 const limpo = (s) => String(s || 'conta').normalize('NFD').replace(/[̀-ͯ]/g, '')
   .replace(/[^a-zA-Z0-9]+/g, '-').replace(/^-|-$/g, '').toLowerCase();
@@ -418,6 +420,7 @@ async function main() {
   fs.mkdirSync(PASTA, { recursive: true });
   console.log(`\n=== Robo Extrato ${VERSAO} ===`);
   console.log(`Periodo: ${periodo}\n`);
+  const t0 = Date.now();
 
   /* Perfil FIXO do Chrome instalado (channel:'chrome'): o Dispositivo de
      Seguranca do Sicredi reconhece melhor o Chrome de verdade, e a "confianca"
@@ -471,6 +474,7 @@ async function main() {
     console.log('');
 
     for (const conta of contas) {
+      const tc = Date.now();
       try {
         console.log(`Conta ${conta.label} — selecionando...`);
         if (modo === 'todas') await selecionarContaModal(page, conta);
@@ -484,7 +488,7 @@ async function main() {
         catch { /* extrato ja carregado */ }
         await espera(3000);
         const nome = await baixarPlanilha(page, conta);
-        console.log(`  ok: ${nome}`);
+        console.log(`  ok: ${nome} (${dur(Date.now() - tc)})`);
         ok.push(conta.label);
       } catch (e) {
         console.error(`  FALHOU ${conta.label}: ${e.message}`);
@@ -507,6 +511,8 @@ async function main() {
   console.log('\n=== Resumo ===');
   console.log(`Baixadas: ${ok.length}${ok.length ? ' (' + ok.join(', ') + ')' : ''}`);
   if (falhou.length) console.log(`Falharam: ${falhou.length} (${falhou.join(', ')}) — veja os prints erro_*.png em extratos\\`);
+  const seg = ok.length ? ` (~${dur((Date.now() - t0) / Math.max(ok.length, 1))} por conta)` : '';
+  console.log(`Tempo total: ${dur(Date.now() - t0)}${seg}`);
   console.log('');
 }
 
