@@ -28,7 +28,7 @@ const PASTA = path.join(RAIZ, 'extratos');
 const PERFIL = path.join(RAIZ, 'perfil-chrome'); // perfil fixo do navegador (fica so no PC)
 const URL_BANCO = process.env.BANCO_URL
   || 'https://ibpj.sicredi.com.br/ib-view/loginpj/preauth.html';
-const VERSAO = 'extrato v12 (abre Ver Mais chamando urlVerMais)';
+const VERSAO = 'extrato v13 (selecao via selconta + rodar so algumas)';
 const espera = (ms) => new Promise(r => setTimeout(r, ms));
 const hoje = () => new Date().toLocaleDateString('sv-SE');
 
@@ -385,7 +385,18 @@ async function selecionarContaModal(page, c) {
   const reRazao = new RegExp('^\\s*' + c.razao.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\s*$', 'i');
   let alvo = page.getByRole('link', { name: reRazao }).first();
   if (!(await alvo.isVisible({ timeout: 1500 }).catch(() => false))) alvo = page.getByText(reRazao).first();
-  await alvo.click({ timeout: 8000 });
+  /* selecionar uma conta = ir para /ib-view/selconta/<ID>.html (o onclick do
+     link). Navegar direto pelo destino e mais confiavel que clicar — o clique
+     as vezes falha por "elemento nao estavel" (ex.: GALNO). */
+  const onclick = await alvo.getAttribute('onclick').catch(() => null);
+  const m = onclick && onclick.match(/selconta\/(\d+)\.html/i);
+  if (m) {
+    await page.goto(new URL(`/ib-view/selconta/${m[1]}.html`, page.url()).href,
+      { waitUntil: 'domcontentloaded', timeout: 60000 });
+  } else {
+    await alvo.scrollIntoViewIfNeeded().catch(() => {});
+    await alvo.click({ timeout: 8000, force: true });
+  }
   await espera(2500);
 }
 
@@ -448,6 +459,15 @@ async function main() {
     }
     console.log(`Contas encontradas (${contas.length}) [${modo === 'todas' ? 'lista completa' : 'so favoritas'}]:`);
     contas.forEach(c => console.log(`  - ${c.label}`));
+
+    /* rodar so algumas contas: passe os numeros na linha de comando, ex.:
+       node scripts\\extrato-banco.js 71532  (baixa so a 71532-6)
+       node scripts\\extrato-banco.js 71532 63896  (essas duas) */
+    const filtros = process.argv.slice(2).map(s => s.replace(/\D/g, '')).filter(Boolean);
+    if (filtros.length) {
+      contas = contas.filter(c => filtros.some(f => c.conta.replace(/\D/g, '').includes(f)));
+      console.log(`Filtrando para ${contas.length} conta(s): ${contas.map(c => c.label).join(', ')}`);
+    }
     console.log('');
 
     for (const conta of contas) {
