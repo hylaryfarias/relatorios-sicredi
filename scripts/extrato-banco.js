@@ -28,7 +28,7 @@ const PASTA = path.join(RAIZ, 'extratos');
 const PERFIL = path.join(RAIZ, 'perfil-chrome'); // perfil fixo do navegador (fica so no PC)
 const URL_BANCO = process.env.BANCO_URL
   || 'https://ibpj.sicredi.com.br/ib-view/loginpj/preauth.html';
-const VERSAO = 'extrato v9 (abre Ver Mais por varios caminhos)';
+const VERSAO = 'extrato v10 (despeja o HTML do seletor se falhar)';
 const espera = (ms) => new Promise(r => setTimeout(r, ms));
 const hoje = () => new Date().toLocaleDateString('sv-SE');
 
@@ -251,6 +251,33 @@ async function abrirPesquisarContas(page) {
   return false;
 }
 
+/* despeja num txt como sao o seletor de contas e o "Ver Mais" no HTML, para
+   ajustar o clique quando a abertura automatica falha */
+async function dumpSeletor(page) {
+  try {
+    const info = await page.evaluate(() => {
+      const out = [];
+      document.querySelectorAll('select').forEach((s, i) => {
+        out.push(`SELECT#${i}: ` + s.outerHTML.replace(/\s+/g, ' ').slice(0, 600));
+      });
+      const todos = Array.from(document.querySelectorAll('*'));
+      todos.forEach(el => {
+        if (el.children.length === 0 && /ver\s*mais/i.test(el.textContent || '')) {
+          out.push(`VERMAIS: <${el.tagName.toLowerCase()} class="${el.className}" role="${el.getAttribute('role') || ''}" href="${el.getAttribute('href') || ''}"> ${(el.textContent || '').trim().slice(0, 40)}`);
+        }
+      });
+      todos.forEach(el => {
+        const t = (el.textContent || '').trim();
+        if (el.children.length <= 2 && /\d{4,6}-\d/.test(t) && t.length < 70) {
+          out.push(`CONTA-EL: <${el.tagName.toLowerCase()} class="${el.className}" role="${el.getAttribute('role') || ''}"> ${t.slice(0, 60)}`);
+        }
+      });
+      return out.join('\n');
+    });
+    fs.writeFileSync(path.join(PASTA, 'ver_mais_debug.txt'), info || '(vazio)', 'utf8');
+  } catch (e) { /* sem debug */ }
+}
+
 async function lerTabelaContas(page) {
   const contas = [], vistos = new Set();
   for (let pag = 1; pag <= 20; pag++) {
@@ -332,9 +359,11 @@ async function main() {
     let contas = [], sw = null, modo = 'todas';
     if (await abrirPesquisarContas(page)) contas = await lerTabelaContas(page);
     if (!contas.length) {
-      /* nao abriu a lista completa: guarda um print do seletor para ajustar */
+      /* nao abriu a lista completa: guarda print + despejo do HTML para ajustar */
       try { await page.screenshot({ path: path.join(PASTA, `ver_mais_${hoje()}.png`), fullPage: true }); } catch { /* */ }
-      console.log('(nao consegui abrir o "Ver Mais"; usando so as favoritas. Print em extratos\\ver_mais_...png)');
+      await dumpSeletor(page);
+      console.log('(nao consegui abrir o "Ver Mais"; usando so as favoritas.');
+      console.log(' Me mande o arquivo extratos\\ver_mais_debug.txt para eu acertar o clique.)');
       modo = 'favoritas';
       await abrirExtrato(page).catch(() => {});
       sw = await descobrirContas(page);
