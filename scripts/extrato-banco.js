@@ -28,7 +28,7 @@ const PASTA = path.join(RAIZ, 'extratos');
 const PERFIL = path.join(RAIZ, 'perfil-chrome'); // perfil fixo do navegador (fica so no PC)
 const URL_BANCO = process.env.BANCO_URL
   || 'https://ibpj.sicredi.com.br/ib-view/loginpj/preauth.html';
-const VERSAO = 'extrato v8 (todas as contas via Ver Mais / Pesquisar Contas)';
+const VERSAO = 'extrato v9 (abre Ver Mais por varios caminhos)';
 const espera = (ms) => new Promise(r => setTimeout(r, ms));
 const hoje = () => new Date().toLocaleDateString('sv-SE');
 
@@ -210,20 +210,44 @@ async function selecionarConta(page, sw, conta) {
    essa janela, le a tabela inteira e depois seleciona cada conta clicando na
    Razao social. */
 async function abrirPesquisarContas(page) {
-  if (await page.getByText(/pesquisar contas/i).first().isVisible({ timeout: 800 }).catch(() => false)) return true;
+  const jaAberto = () => page.getByText(/pesquisar contas/i).first().isVisible({ timeout: 800 }).catch(() => false);
+  if (await jaAberto()) return true;
   const clicarVerMais = async () => {
     const l = page.getByText(/^\s*ver mais\s*$/i).first();
-    if (await l.isVisible({ timeout: 1200 }).catch(() => false)) { await l.click(); return true; }
+    if (await l.isVisible({ timeout: 1200 }).catch(() => false)) { await l.click(); await espera(1500); return await jaAberto(); }
     return false;
   };
-  if (await clicarVerMais()) { await espera(1500); return true; }
-  /* "Ver Mais" so aparece com o seletor de contas aberto: abre o seletor */
-  for (const abre of [
-    () => page.locator('select').first().click({ timeout: 1500 }),
-    () => page.locator('[class*=conta], [class*=Conta], [role=combobox]').filter({ hasText: PAR_CONTA }).first().click({ timeout: 1500 }),
-  ]) {
-    try { await abre(); await espera(700); if (await clicarVerMais()) { await espera(1500); return true; } } catch { /* tenta o proximo */ }
+
+  /* A) "Ver Mais" pode ser uma OPCAO de um <select> nativo — seleciona ela */
+  const selects = page.locator('select');
+  const ns = await selects.count();
+  for (let i = 0; i < ns; i++) {
+    const s = selects.nth(i);
+    const opts = s.locator('option');
+    const m = await opts.count();
+    for (let j = 0; j < m; j++) {
+      const t = ((await opts.nth(j).textContent().catch(() => '')) || '').trim();
+      if (/ver mais/i.test(t)) {
+        const val = await opts.nth(j).getAttribute('value');
+        try { await s.selectOption(val != null && val !== '' ? { value: val } : { label: t }); } catch { /* */ }
+        await espera(1500);
+        if (await jaAberto()) return true;
+      }
+    }
   }
+
+  /* B) seletor custom: clica o GATILHO visivel (a caixa com a conta atual) e
+        depois o "Ver Mais" que aparece na lista aberta */
+  const gatilhos = [
+    page.getByRole('combobox').first(),
+    page.getByText(PAR_CONTA).first(),
+    page.locator('[class*=conta i], [class*=account i], [role=button]').filter({ hasText: PAR_CONTA }).first(),
+    page.locator('select').first(),
+  ];
+  for (const g of gatilhos) {
+    try { await g.click({ timeout: 1500 }); await espera(700); if (await clicarVerMais()) return true; } catch { /* proximo */ }
+  }
+  if (await clicarVerMais()) return true;
   return false;
 }
 
@@ -308,6 +332,9 @@ async function main() {
     let contas = [], sw = null, modo = 'todas';
     if (await abrirPesquisarContas(page)) contas = await lerTabelaContas(page);
     if (!contas.length) {
+      /* nao abriu a lista completa: guarda um print do seletor para ajustar */
+      try { await page.screenshot({ path: path.join(PASTA, `ver_mais_${hoje()}.png`), fullPage: true }); } catch { /* */ }
+      console.log('(nao consegui abrir o "Ver Mais"; usando so as favoritas. Print em extratos\\ver_mais_...png)');
       modo = 'favoritas';
       await abrirExtrato(page).catch(() => {});
       sw = await descobrirContas(page);
