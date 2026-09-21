@@ -25,3 +25,6 @@ Thumbs.db
 # Credenciais do banco (so no seu PC)
 banco.json
 extratos/
+
+# Perfil do navegador do robo do extrato (fica so no PC)
+perfil-chrome/

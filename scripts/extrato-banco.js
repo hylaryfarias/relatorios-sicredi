@@ -25,9 +25,10 @@ import { chromium } from 'playwright';
 
 const RAIZ = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const PASTA = path.join(RAIZ, 'extratos');
+const PERFIL = path.join(RAIZ, 'perfil-chrome'); // perfil fixo do navegador (fica so no PC)
 const URL_BANCO = process.env.BANCO_URL
   || 'https://ibpj.sicredi.com.br/ib-view/loginpj/preauth.html';
-const VERSAO = 'extrato v5 (todas as contas, teclado por texto)';
+const VERSAO = 'extrato v6 (Chrome fixo, passa o Dispositivo de Seguranca)';
 const espera = (ms) => new Promise(r => setTimeout(r, ms));
 const hoje = () => new Date().toLocaleDateString('sv-SE');
 
@@ -94,20 +95,44 @@ async function senhaPeloTeclado(page, senha) {
   }
 }
 
-async function login(page, b) {
-  await page.goto(URL_BANCO, { waitUntil: 'domcontentloaded', timeout: 60000 });
-  await espera(2500);
-  console.log('Login 1/2: CNPJ');
-  await digitarReal(campoTexto(page), b.cnpj);
-  await clicar(page, [/acessar/i], { timeout: 12000 });
-  await espera(3500);
-  console.log('Login 2/2: usuario e senha (teclado da tela)');
-  await digitarReal(campoTexto(page), b.login);
-  await espera(600);
-  await senhaPeloTeclado(page, b.senha);
-  await espera(500);
-  await clicar(page, [/acessar/i], { timeout: 12000 });
-  await espera(6000);
+const naOferta = (page) => /oferta|warsaw|diagnostico/i.test(page.url());
+
+/* login com retentativa: o Sicredi as vezes intercala a tela do "Dispositivo
+   de Seguranca" (ofertaWarsaw.html) antes/depois do login. Nao instalamos nada
+   — voltamos para a tela de acesso e tentamos de novo. Com o perfil fixo do
+   Chrome, a confianca do dispositivo tende a ficar salva e a passar. */
+async function fazerLogin(page, b) {
+  for (let t = 1; t <= 4; t++) {
+    await page.goto(URL_BANCO, { waitUntil: 'domcontentloaded', timeout: 60000 });
+    await espera(2500);
+    console.log(`Login (tentativa ${t}) 1/2: CNPJ`);
+    await digitarReal(campoTexto(page), b.cnpj);
+    await clicar(page, [/acessar/i], { timeout: 12000 });
+    await espera(4000);
+    if (naOferta(page)) {
+      console.log('  -> caiu na tela do Dispositivo de Seguranca. Nao instalo nada; tento de novo.');
+      await espera(2000);
+      continue;
+    }
+    console.log('Login 2/2: usuario e senha (teclado da tela)');
+    await digitarReal(campoTexto(page), b.login);
+    await espera(600);
+    await senhaPeloTeclado(page, b.senha);
+    await espera(500);
+    await clicar(page, [/acessar/i], { timeout: 12000 });
+    await espera(6000);
+    if (naOferta(page)) {
+      console.log('  -> Dispositivo de Seguranca depois da senha. Tento de novo.');
+      await espera(2000);
+      continue;
+    }
+    return true; // entrou
+  }
+  throw new Error('O Sicredi ficou preso na tela do "Dispositivo de Seguranca" '
+    + '(ofertaWarsaw.html) e nao deixou passar para a conta. Esse e o anti-fraude '
+    + 'do banco. Tente: (1) rodar de novo — as vezes passa na 2a; (2) abrir o site '
+    + 'do banco no seu Chrome normal UMA vez, logar e deixar o dispositivo instalado, '
+    + 'depois fechar o Chrome e rodar o robo (ele usa o mesmo Chrome).');
 }
 
 async function abrirExtrato(page) {
@@ -198,18 +223,23 @@ async function main() {
   console.log(`\n=== Robo Extrato ${VERSAO} ===`);
   console.log(`Periodo: ${periodo}\n`);
 
-  /* --disable-http2: o servidor do Sicredi (ib-view) derruba a conexao HTTP/2
-     sob automacao (ERR_HTTP2_PROTOCOL_ERROR na tela testarAcesso.html logo apos
-     o CNPJ). Forcando HTTP/1.1 a pagina carrega normal. */
-  const browser = await chromium.launch({
-    headless: false, slowMo: 120,
-    args: ['--disable-http2', '--disable-blink-features=AutomationControlled'],
-  });
-  const ctx = await browser.newContext({ acceptDownloads: true });
-  const page = await ctx.newPage();
+  /* Perfil FIXO do Chrome instalado (channel:'chrome'): o Dispositivo de
+     Seguranca do Sicredi reconhece melhor o Chrome de verdade, e a "confianca"
+     do dispositivo fica salva no perfil entre execucoes, reduzindo a tela do
+     ofertaWarsaw. --disable-http2 evita o ERR_HTTP2_PROTOCOL_ERROR no login. */
+  const args = ['--disable-http2', '--disable-blink-features=AutomationControlled'];
+  const opts = { headless: false, slowMo: 120, acceptDownloads: true, viewport: null, args };
+  let ctx;
+  try {
+    ctx = await chromium.launchPersistentContext(PERFIL, { channel: 'chrome', ...opts });
+  } catch (e) {
+    console.log('(Chrome nao encontrado — usando o navegador embutido)');
+    ctx = await chromium.launchPersistentContext(PERFIL, opts);
+  }
+  const page = ctx.pages()[0] || await ctx.newPage();
   const ok = [], falhou = [];
   try {
-    await login(page, b);
+    await fazerLogin(page, b);
     await abrirExtrato(page);
 
     const sw = await descobrirContas(page);
@@ -250,7 +280,6 @@ async function main() {
     await ctx.close();
     console.error('\nParou:', e.message, '\n');
   }
-  await browser.close();
 
   console.log('\n=== Resumo ===');
   console.log(`Baixadas: ${ok.length}${ok.length ? ' (' + ok.join(', ') + ')' : ''}`);
