@@ -28,7 +28,7 @@ const PASTA = path.join(RAIZ, 'extratos');
 const PERFIL = path.join(RAIZ, 'perfil-chrome'); // perfil fixo do navegador (fica so no PC)
 const URL_BANCO = process.env.BANCO_URL
   || 'https://ibpj.sicredi.com.br/ib-view/loginpj/preauth.html';
-const VERSAO = 'extrato v10 (despeja o HTML do seletor se falhar)';
+const VERSAO = 'extrato v11 (seleciona a conta pela busca do numero)';
 const espera = (ms) => new Promise(r => setTimeout(r, ms));
 const hoje = () => new Date().toLocaleDateString('sv-SE');
 
@@ -278,7 +278,29 @@ async function dumpSeletor(page) {
   } catch (e) { /* sem debug */ }
 }
 
+/* grava a estrutura da janela "Pesquisar Contas" (campos de busca, botoes,
+   paginador) para ajustar os seletores se a selecao falhar */
+async function dumpModal(page) {
+  try {
+    const info = await page.evaluate(() => {
+      const out = [];
+      document.querySelectorAll('input').forEach((el, i) => {
+        if (el.offsetParent === null) return;
+        out.push(`INPUT#${i}: type=${el.type} id=${el.id} name=${el.name} placeholder="${el.placeholder}" aria-label="${el.getAttribute('aria-label') || ''}"`);
+      });
+      document.querySelectorAll('button, a').forEach(el => {
+        const t = (el.textContent || '').replace(/\s+/g, ' ').trim();
+        if (t && t.length < 25 && /pesquisar|limpar|^\d+$|proxim|anterior|»|«|>|</i.test(t))
+          out.push(`BTN/A: <${el.tagName.toLowerCase()} class="${el.className}"> ${t}`);
+      });
+      return out.join('\n');
+    });
+    fs.writeFileSync(path.join(PASTA, 'pesquisar_contas_debug.txt'), info || '(vazio)', 'utf8');
+  } catch { /* sem debug */ }
+}
+
 async function lerTabelaContas(page) {
+  await dumpModal(page);
   const contas = [], vistos = new Set();
   for (let pag = 1; pag <= 20; pag++) {
     await espera(800);
@@ -303,13 +325,50 @@ async function lerTabelaContas(page) {
   return contas;
 }
 
+/* vai para a pagina N do paginador da janela "Pesquisar Contas" */
+async function irPaginaContas(page, n) {
+  for (const cand of [
+    page.getByRole('link', { name: String(n), exact: true }),
+    page.getByRole('button', { name: String(n), exact: true }),
+    page.getByText(new RegExp(`^\\s*${n}\\s*$`)),
+  ]) {
+    const el = cand.last();
+    if (await el.isVisible({ timeout: 1000 }).catch(() => false)) { await el.click().catch(() => {}); await espera(1200); return true; }
+  }
+  return false;
+}
+
+/* filtra a janela pelo NUMERO da conta (campo "Conta" + Pesquisar), deixando
+   so aquela conta na tabela — mais confiavel que virar pagina */
+async function filtrarPorConta(page, conta) {
+  const num = String(conta).split('-')[0].replace(/\D/g, '');
+  const campos = [
+    page.getByLabel(/^\s*conta\s*$/i),
+    page.getByPlaceholder(/conta/i),
+    /* 2o input de texto visivel da janela costuma ser o "Conta"
+       (ordem: Cooperativa, Conta, Razao social) */
+    page.locator('input[type=text]:visible, input:not([type]):visible').nth(1),
+  ];
+  for (const c of campos) {
+    const el = c.first();
+    if (await el.isVisible({ timeout: 1000 }).catch(() => false)) {
+      try {
+        await el.fill('');
+        await el.fill(num);
+        await clicar(page, [/pesquisar/i], { timeout: 5000 });
+        await espera(1800);
+        return true;
+      } catch { /* tenta o proximo campo */ }
+    }
+  }
+  return false;
+}
+
 async function selecionarContaModal(page, c) {
   await abrirPesquisarContas(page);
   await espera(700);
-  if (c.pagina > 1) {
-    const p = page.getByText(new RegExp(`^\\s*${c.pagina}\\s*$`)).last();
-    if (await p.isVisible({ timeout: 1500 }).catch(() => false)) { await p.click(); await espera(1000); }
-  }
+  /* 1o tenta filtrar pelo numero da conta; se nao rolar, vira a pagina */
+  if (!(await filtrarPorConta(page, c.conta))) await irPaginaContas(page, c.pagina);
   const reRazao = new RegExp('^\\s*' + c.razao.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\s*$', 'i');
   let alvo = page.getByRole('link', { name: reRazao }).first();
   if (!(await alvo.isVisible({ timeout: 1500 }).catch(() => false))) alvo = page.getByText(reRazao).first();
