@@ -28,7 +28,7 @@ const PASTA = path.join(RAIZ, 'extratos');
 const PERFIL = path.join(RAIZ, 'perfil-chrome'); // perfil fixo do navegador (fica so no PC)
 const URL_BANCO = process.env.BANCO_URL
   || 'https://ibpj.sicredi.com.br/ib-view/loginpj/preauth.html';
-const VERSAO = 'extrato v7 (abre o Extrato de cada conta)';
+const VERSAO = 'extrato v8 (todas as contas via Ver Mais / Pesquisar Contas)';
 const espera = (ms) => new Promise(r => setTimeout(r, ms));
 const hoje = () => new Date().toLocaleDateString('sv-SE');
 
@@ -204,6 +204,68 @@ async function selecionarConta(page, sw, conta) {
   await espera(2500);
 }
 
+/* ---------- lista COMPLETA de contas (janela "Pesquisar Contas") ----------
+   O seletor do topo mostra so as 5 favoritas + "Ver Mais". O "Ver Mais" abre a
+   janela "Pesquisar Contas", com TODAS as contas em paginas. Aqui a gente abre
+   essa janela, le a tabela inteira e depois seleciona cada conta clicando na
+   Razao social. */
+async function abrirPesquisarContas(page) {
+  if (await page.getByText(/pesquisar contas/i).first().isVisible({ timeout: 800 }).catch(() => false)) return true;
+  const clicarVerMais = async () => {
+    const l = page.getByText(/^\s*ver mais\s*$/i).first();
+    if (await l.isVisible({ timeout: 1200 }).catch(() => false)) { await l.click(); return true; }
+    return false;
+  };
+  if (await clicarVerMais()) { await espera(1500); return true; }
+  /* "Ver Mais" so aparece com o seletor de contas aberto: abre o seletor */
+  for (const abre of [
+    () => page.locator('select').first().click({ timeout: 1500 }),
+    () => page.locator('[class*=conta], [class*=Conta], [role=combobox]').filter({ hasText: PAR_CONTA }).first().click({ timeout: 1500 }),
+  ]) {
+    try { await abre(); await espera(700); if (await clicarVerMais()) { await espera(1500); return true; } } catch { /* tenta o proximo */ }
+  }
+  return false;
+}
+
+async function lerTabelaContas(page) {
+  const contas = [], vistos = new Set();
+  for (let pag = 1; pag <= 20; pag++) {
+    await espera(800);
+    const linhas = page.locator('tr').filter({ hasText: PAR_CONTA });
+    const n = await linhas.count();
+    for (let i = 0; i < n; i++) {
+      const txt = ((await linhas.nth(i).innerText().catch(() => '')) || '').replace(/\s+/g, ' ').trim();
+      const m = txt.match(/(\d{4,6}-\d)/);
+      if (!m) continue;
+      const conta = m[1];
+      const razao = txt.split(conta).pop().trim();
+      const chave = conta + '|' + razao;
+      if (!razao || vistos.has(chave)) continue;
+      vistos.add(chave);
+      contas.push({ conta, razao, label: `${conta} - ${razao}`, pagina: pag });
+    }
+    /* proxima pagina: clica o numero pag+1 no paginador, se existir */
+    const prox = page.getByText(new RegExp(`^\\s*${pag + 1}\\s*$`)).last();
+    if (!(await prox.isVisible({ timeout: 1000 }).catch(() => false))) break;
+    await prox.click().catch(() => {});
+  }
+  return contas;
+}
+
+async function selecionarContaModal(page, c) {
+  await abrirPesquisarContas(page);
+  await espera(700);
+  if (c.pagina > 1) {
+    const p = page.getByText(new RegExp(`^\\s*${c.pagina}\\s*$`)).last();
+    if (await p.isVisible({ timeout: 1500 }).catch(() => false)) { await p.click(); await espera(1000); }
+  }
+  const reRazao = new RegExp('^\\s*' + c.razao.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\s*$', 'i');
+  let alvo = page.getByRole('link', { name: reRazao }).first();
+  if (!(await alvo.isVisible({ timeout: 1500 }).catch(() => false))) alvo = page.getByText(reRazao).first();
+  await alvo.click({ timeout: 8000 });
+  await espera(2500);
+}
+
 async function baixarPlanilha(page, conta) {
   const [download] = await Promise.all([
     page.waitForEvent('download', { timeout: 60000 }),
@@ -240,22 +302,31 @@ async function main() {
   const ok = [], falhou = [];
   try {
     await fazerLogin(page, b);
-    await abrirExtrato(page);
 
-    const sw = await descobrirContas(page);
-    if (!sw || !sw.contas.length) {
+    /* lista COMPLETA de contas pela janela "Pesquisar Contas" (Ver Mais).
+       Se nao conseguir abrir, cai para o seletor do topo (so as favoritas). */
+    let contas = [], sw = null, modo = 'todas';
+    if (await abrirPesquisarContas(page)) contas = await lerTabelaContas(page);
+    if (!contas.length) {
+      modo = 'favoritas';
+      await abrirExtrato(page).catch(() => {});
+      sw = await descobrirContas(page);
+      if (sw) contas = sw.contas;
+    }
+    if (!contas.length) {
       await page.screenshot({ path: path.join(PASTA, `contas_nao_achei_${hoje()}.png`), fullPage: true });
-      throw new Error('Nao achei o seletor de contas. Salvei um print em '
+      throw new Error('Nao achei a lista de contas. Salvei um print em '
         + 'extratos\\contas_nao_achei_...png — me mande esse print para eu acertar o seletor.');
     }
-    console.log(`Contas encontradas (${sw.contas.length}):`);
-    sw.contas.forEach(c => console.log(`  - ${c.label}`));
+    console.log(`Contas encontradas (${contas.length}) [${modo === 'todas' ? 'lista completa' : 'so favoritas'}]:`);
+    contas.forEach(c => console.log(`  - ${c.label}`));
     console.log('');
 
-    for (const conta of sw.contas) {
+    for (const conta of contas) {
       try {
         console.log(`Conta ${conta.label} — selecionando...`);
-        await selecionarConta(page, sw, conta);
+        if (modo === 'todas') await selecionarContaModal(page, conta);
+        else await selecionarConta(page, sw, conta);
         /* trocar de conta volta para a Pagina Inicial: reabre o Extrato dela */
         await espera(1500);
         await abrirExtrato(page);
