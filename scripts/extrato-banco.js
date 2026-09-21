@@ -27,7 +27,7 @@ const RAIZ = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const PASTA = path.join(RAIZ, 'extratos');
 const URL_BANCO = process.env.BANCO_URL
   || 'https://ibpj.sicredi.com.br/ib-view/loginpj/preauth.html';
-const VERSAO = 'extrato v3 (todas as contas, campo de login visivel)';
+const VERSAO = 'extrato v4 (todas as contas, HTTP/1.1)';
 const espera = (ms) => new Promise(r => setTimeout(r, ms));
 const hoje = () => new Date().toLocaleDateString('sv-SE');
 
@@ -198,7 +198,13 @@ async function main() {
   console.log(`\n=== Robo Extrato ${VERSAO} ===`);
   console.log(`Periodo: ${periodo}\n`);
 
-  const browser = await chromium.launch({ headless: false, slowMo: 120 });
+  /* --disable-http2: o servidor do Sicredi (ib-view) derruba a conexao HTTP/2
+     sob automacao (ERR_HTTP2_PROTOCOL_ERROR na tela testarAcesso.html logo apos
+     o CNPJ). Forcando HTTP/1.1 a pagina carrega normal. */
+  const browser = await chromium.launch({
+    headless: false, slowMo: 120,
+    args: ['--disable-http2', '--disable-blink-features=AutomationControlled'],
+  });
   const ctx = await browser.newContext({ acceptDownloads: true });
   const page = await ctx.newPage();
   const ok = [], falhou = [];
