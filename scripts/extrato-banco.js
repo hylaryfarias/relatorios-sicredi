@@ -28,7 +28,7 @@ const PASTA = path.join(RAIZ, 'extratos');
 const PERFIL = path.join(RAIZ, 'perfil-chrome'); // perfil fixo do navegador (fica so no PC)
 const URL_BANCO = process.env.BANCO_URL
   || 'https://ibpj.sicredi.com.br/ib-view/loginpj/preauth.html';
-const VERSAO = 'extrato v6 (Chrome fixo, passa o Dispositivo de Seguranca)';
+const VERSAO = 'extrato v7 (abre o Extrato de cada conta)';
 const espera = (ms) => new Promise(r => setTimeout(r, ms));
 const hoje = () => new Date().toLocaleDateString('sv-SE');
 
@@ -256,10 +256,14 @@ async function main() {
       try {
         console.log(`Conta ${conta.label} — selecionando...`);
         await selecionarConta(page, sw, conta);
-        /* algumas telas exigem reabrir o Extrato/refazer a pesquisa apos trocar */
+        /* trocar de conta volta para a Pagina Inicial: reabre o Extrato dela */
+        await espera(1500);
+        await abrirExtrato(page);
         await ajustarPeriodo(page, periodo);
-        await clicar(page, [/pesquisar/i], { timeout: 12000 });
-        await espera(3500);
+        /* Pesquisar/Consultar e opcional: em algumas telas o extrato ja aparece */
+        try { await clicar(page, [/pesquisar/i, /consultar/i, /buscar/i, /filtrar/i, /aplicar/i, /visualizar/i], { timeout: 6000 }); }
+        catch { /* extrato ja carregado */ }
+        await espera(3000);
         const nome = await baixarPlanilha(page, conta);
         console.log(`  ok: ${nome}`);
         ok.push(conta.label);
