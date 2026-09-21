@@ -27,7 +27,7 @@ const RAIZ = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const PASTA = path.join(RAIZ, 'extratos');
 const URL_BANCO = process.env.BANCO_URL
   || 'https://ibpj.sicredi.com.br/ib-view/loginpj/preauth.html';
-const VERSAO = 'extrato v2 (todas as contas)';
+const VERSAO = 'extrato v3 (todas as contas, campo de login visivel)';
 const espera = (ms) => new Promise(r => setTimeout(r, ms));
 const hoje = () => new Date().toLocaleDateString('sv-SE');
 
@@ -46,9 +46,16 @@ function carregarBanco() {
 }
 
 async function digitarReal(campo, valor) {
+  await campo.waitFor({ state: 'visible', timeout: 15000 });
   await campo.click();
   await campo.fill('');
   await campo.pressSequentially(valor, { delay: 60 });
+}
+
+/* primeiro campo de texto VISIVEL — a tela tem inputs escondidos (ex.:
+   <input type=hidden id=infoValue>) que vinham na frente e travavam o login */
+function campoTexto(page) {
+  return page.locator('input:not([type=password]):not([type=hidden]):visible').first();
 }
 
 async function clicar(page, textos, { timeout = 15000 } = {}) {
@@ -91,11 +98,11 @@ async function login(page, b) {
   await page.goto(URL_BANCO, { waitUntil: 'domcontentloaded', timeout: 60000 });
   await espera(2500);
   console.log('Login 1/2: CNPJ');
-  await digitarReal(page.locator('input').first(), b.cnpj);
+  await digitarReal(campoTexto(page), b.cnpj);
   await clicar(page, [/acessar/i], { timeout: 12000 });
   await espera(3500);
   console.log('Login 2/2: usuario e senha (teclado da tela)');
-  await digitarReal(page.locator('input:not([type=password])').first(), b.login);
+  await digitarReal(campoTexto(page), b.login);
   await espera(600);
   await senhaPeloTeclado(page, b.senha);
   await espera(500);
