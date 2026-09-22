@@ -28,7 +28,7 @@ const PASTA = path.join(RAIZ, 'extratos');
 const PERFIL = path.join(RAIZ, 'perfil-chrome'); // perfil fixo do navegador (fica so no PC)
 const URL_BANCO = process.env.BANCO_URL
   || 'https://ibpj.sicredi.com.br/ib-view/loginpj/preauth.html';
-const VERSAO = 'extrato v17 (reconfere Ver Mais mesmo com navegacao)';
+const VERSAO = 'extrato v18 (seleciona pela URL selconta, sem digitar em campo)';
 const espera = (ms) => new Promise(r => setTimeout(r, ms));
 const hoje = () => new Date().toLocaleDateString('sv-SE');
 /* duracao amigavel: "42s" ou "3m 07s" */
@@ -213,12 +213,12 @@ async function selecionarConta(page, sw, conta) {
    Razao social. */
 async function abrirPesquisarContas(page) {
   const jaAberto = async () => {
-    if (await page.getByText(/pesquisar contas/i).first().isVisible({ timeout: 800 }).catch(() => false)) return true;
-    if (/pesquisarcontas|vermais|selconta/i.test(page.url())) return true;
-    /* a tabela completa tem muitas linhas de conta (as favoritas ficam num
-       <select>, entao no dashboard quase nao ha <tr> com cara de conta) */
-    const linhas = await page.locator('tr').filter({ hasText: PAR_CONTA }).count().catch(() => 0);
-    return linhas > 6;
+    /* sinal CONFIAVEL: os links de conta "selconta" so existem na janela
+       "Pesquisar Contas". (Antes eu contava linhas com cara de conta, mas as
+       linhas de lancamento do proprio Extrato davam falso positivo.) */
+    const nSel = await page.locator('a[onclick*="selconta"]').count().catch(() => 0);
+    if (nSel > 0) return true;
+    return await page.getByText(/pesquisar contas/i).first().isVisible({ timeout: 600 }).catch(() => false);
   };
   if (await jaAberto()) return true;
 
@@ -327,20 +327,24 @@ async function lerTabelaContas(page) {
   const contas = [], vistos = new Set();
   for (let pag = 1; pag <= 20; pag++) {
     await espera(800);
-    const linhas = page.locator('tr').filter({ hasText: PAR_CONTA });
-    const n = await linhas.count();
+    /* cada conta e um link "selconta/<ID>.html" — guardo o ID para selecionar
+       depois indo direto na URL (sem reabrir janela nem digitar em campo) */
+    const links = page.locator('a[onclick*="selconta"]');
+    const n = await links.count();
     for (let i = 0; i < n; i++) {
-      const txt = ((await linhas.nth(i).innerText().catch(() => '')) || '').replace(/\s+/g, ' ').trim();
-      const m = txt.match(/(\d{4,6}-\d)/);
-      if (!m) continue;
-      const conta = m[1];
-      const razao = txt.split(conta).pop().trim();
-      const chave = conta + '|' + razao;
+      const lk = links.nth(i);
+      const razao = ((await lk.innerText().catch(() => '')) || '').replace(/\s+/g, ' ').trim();
+      const onclick = (await lk.getAttribute('onclick').catch(() => '')) || '';
+      const mid = onclick.match(/selconta\/(\d+)\.html/i);
+      const id = mid ? mid[1] : null;
+      const rowtxt = ((await lk.locator('xpath=ancestor::tr[1]').innerText().catch(() => '')) || '').replace(/\s+/g, ' ');
+      const mc = rowtxt.match(/(\d{4,6}-\d)/);
+      const conta = mc ? mc[1] : '';
+      const chave = id || (conta + '|' + razao);
       if (!razao || vistos.has(chave)) continue;
       vistos.add(chave);
-      contas.push({ conta, razao, label: `${conta} - ${razao}`, pagina: pag });
+      contas.push({ conta, razao, id, pagina: pag, label: conta ? `${conta} - ${razao}` : razao });
     }
-    /* proxima pagina: clica o numero pag+1 no paginador, se existir */
     const prox = page.getByText(new RegExp(`^\\s*${pag + 1}\\s*$`)).last();
     if (!(await prox.isVisible({ timeout: 1000 }).catch(() => false))) break;
     await prox.click().catch(() => {});
@@ -388,25 +392,26 @@ async function filtrarPorConta(page, conta) {
 }
 
 async function selecionarContaModal(page, c) {
+  /* caminho principal: ir DIRETO para /ib-view/selconta/<ID>.html (o destino do
+     link da conta, capturado na listagem). Nao reabre janela nem digita em
+     campo nenhum — imune ao problema de digitar no campo errado. */
+  if (c.id) {
+    await page.goto(new URL(`/ib-view/selconta/${c.id}.html`, page.url()).href,
+      { waitUntil: 'domcontentloaded', timeout: 60000 });
+    await espera(2000);
+    return;
+  }
+  /* reserva (raro: sem ID): reabre a janela e clica na razao social */
   await abrirPesquisarContas(page);
   await espera(700);
-  /* 1o tenta filtrar pelo numero da conta; se nao rolar, vira a pagina */
   if (!(await filtrarPorConta(page, c.conta))) await irPaginaContas(page, c.pagina);
   const reRazao = new RegExp('^\\s*' + c.razao.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\s*$', 'i');
   let alvo = page.getByRole('link', { name: reRazao }).first();
   if (!(await alvo.isVisible({ timeout: 1500 }).catch(() => false))) alvo = page.getByText(reRazao).first();
-  /* selecionar uma conta = ir para /ib-view/selconta/<ID>.html (o onclick do
-     link). Navegar direto pelo destino e mais confiavel que clicar — o clique
-     as vezes falha por "elemento nao estavel" (ex.: GALNO). */
   const onclick = await alvo.getAttribute('onclick').catch(() => null);
   const m = onclick && onclick.match(/selconta\/(\d+)\.html/i);
-  if (m) {
-    await page.goto(new URL(`/ib-view/selconta/${m[1]}.html`, page.url()).href,
-      { waitUntil: 'domcontentloaded', timeout: 60000 });
-  } else {
-    await alvo.scrollIntoViewIfNeeded().catch(() => {});
-    await alvo.click({ timeout: 8000, force: true });
-  }
+  if (m) await page.goto(new URL(`/ib-view/selconta/${m[1]}.html`, page.url()).href, { waitUntil: 'domcontentloaded', timeout: 60000 });
+  else { await alvo.scrollIntoViewIfNeeded().catch(() => {}); await alvo.click({ timeout: 8000, force: true }); }
   await espera(2500);
 }
 
