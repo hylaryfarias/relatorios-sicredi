@@ -28,7 +28,7 @@ const PASTA = path.join(RAIZ, 'extratos');
 const PERFIL = path.join(RAIZ, 'perfil-chrome'); // perfil fixo do navegador (fica so no PC)
 const URL_BANCO = process.env.BANCO_URL
   || 'https://ibpj.sicredi.com.br/ib-view/loginpj/preauth.html';
-const VERSAO = 'extrato v16 (Ver Mais insistente + filtro corrigido)';
+const VERSAO = 'extrato v17 (reconfere Ver Mais mesmo com navegacao)';
 const espera = (ms) => new Promise(r => setTimeout(r, ms));
 const hoje = () => new Date().toLocaleDateString('sv-SE');
 /* duracao amigavel: "42s" ou "3m 07s" */
@@ -212,9 +212,14 @@ async function selecionarConta(page, sw, conta) {
    essa janela, le a tabela inteira e depois seleciona cada conta clicando na
    Razao social. */
 async function abrirPesquisarContas(page) {
-  const jaAberto = async () =>
-    (await page.getByText(/pesquisar contas/i).first().isVisible({ timeout: 800 }).catch(() => false))
-    || /pesquisarcontas|vermais|selconta/i.test(page.url());
+  const jaAberto = async () => {
+    if (await page.getByText(/pesquisar contas/i).first().isVisible({ timeout: 800 }).catch(() => false)) return true;
+    if (/pesquisarcontas|vermais|selconta/i.test(page.url())) return true;
+    /* a tabela completa tem muitas linhas de conta (as favoritas ficam num
+       <select>, entao no dashboard quase nao ha <tr> com cara de conta) */
+    const linhas = await page.locator('tr').filter({ hasText: PAR_CONTA }).count().catch(() => 0);
+    return linhas > 6;
+  };
   if (await jaAberto()) return true;
 
   /* O "Ver Mais" e um <option onclick="urlVerMais();"> dentro do <select
@@ -222,16 +227,12 @@ async function abrirPesquisarContas(page) {
      chamamos a funcao do proprio site direto. Logo apos o login a funcao pode
      ainda nao existir, entao insiste: espera a funcao aparecer, chama, e da
      tempo da janela "Pesquisar Contas" carregar. */
-  for (let i = 0; i < 4; i++) {
-    const chamou = await page.evaluate(() => {
-      if (typeof urlVerMais === 'function') { urlVerMais(); return true; }
-      return false;
-    }).catch(() => false);
-    if (chamou) {
-      for (let w = 0; w < 8; w++) { await espera(1000); if (await jaAberto()) return true; }
-    } else {
-      await espera(1500); // a funcao/pagina ainda nao carregou; espera
-    }
+  for (let i = 0; i < 6; i++) {
+    if (await jaAberto()) return true;
+    /* chamar urlVerMais() pode navegar a pagina e "quebrar" o evaluate — por
+       isso NAO confio no retorno; sempre reconfiro com jaAberto() depois. */
+    await page.evaluate(() => { if (typeof urlVerMais === 'function') urlVerMais(); }).catch(() => {});
+    for (let w = 0; w < 6; w++) { await espera(1000); if (await jaAberto()) return true; }
   }
 
   const clicarVerMais = async () => {
