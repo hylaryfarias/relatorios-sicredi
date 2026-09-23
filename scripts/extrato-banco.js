@@ -28,7 +28,7 @@ const PASTA = path.join(RAIZ, 'extratos');
 const PERFIL = path.join(RAIZ, 'perfil-chrome'); // perfil fixo do navegador (fica so no PC)
 const URL_BANCO = process.env.BANCO_URL
   || 'https://ibpj.sicredi.com.br/ib-view/loginpj/preauth.html';
-const VERSAO = 'extrato v18 (seleciona pela URL selconta, sem digitar em campo)';
+const VERSAO = 'extrato v19 (filtro exato, considera o digito da conta)';
 const espera = (ms) => new Promise(r => setTimeout(r, ms));
 const hoje = () => new Date().toLocaleDateString('sv-SE');
 /* duracao amigavel: "42s" ou "3m 07s" */
@@ -484,15 +484,18 @@ async function main() {
     console.log(`Contas encontradas (${contas.length}) [${modo === 'todas' ? 'lista completa' : 'so favoritas'}]:`);
     contas.forEach(c => console.log(`  - ${c.label}`));
 
-    /* rodar so algumas contas: passe os numeros na linha de comando, ex.:
-       node scripts\\extrato-banco.js 71532  (baixa so a 71532-6)
-       node scripts\\extrato-banco.js 71532 63896  (essas duas) */
+    /* rodar so algumas contas: passe os numeros na linha de comando. Ha contas
+       com o MESMO numero e digito diferente (63923-4 e 63923-8), entao:
+         - com digito casa EXATO so aquela conta:  node ...\\extrato-banco.js 63923-4
+         - sem digito casa todas com aquele numero: node ...\\extrato-banco.js 63923
+       Ex.: node scripts\\extrato-banco.js 71532-6 63896-7 */
     const filtros = process.argv.slice(2).map(s => s.replace(/\D/g, '')).filter(Boolean);
     if (filtros.length) {
-      /* casa pelo numero da conta — usa label quando nao ha campo "conta"
-         (modo favoritas), sem quebrar */
-      const digitos = c => String(c.conta || c.label || '').replace(/\D/g, '');
-      contas = contas.filter(c => filtros.some(f => digitos(c).includes(f)));
+      const full = c => String(c.conta || c.label || '').replace(/\D/g, '');   // 639234 (com digito)
+      const base = c => String(c.conta || c.label || '').split('-')[0].replace(/\D/g, ''); // 63923
+      /* casa EXATO: pelo numero completo (com digito) OU, se voce passou so o
+         numero sem digito, pela base — nunca "contém", pra nao pegar conta parecida */
+      contas = contas.filter(c => filtros.some(f => f === full(c) || f === base(c)));
       if (!contas.length) {
         console.log(`Nenhuma das contas pedidas (${filtros.join(', ')}) esta na lista${modo === 'todas' ? '' : ' de favoritas'}.`
           + (modo === 'todas' ? '' : ' O "Ver Mais" nao abriu, entao so as 5 favoritas foram lidas — rode de novo para pegar a lista completa.'));
