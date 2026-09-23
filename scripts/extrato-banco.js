@@ -28,7 +28,7 @@ const PASTA = path.join(RAIZ, 'extratos');
 const PERFIL = path.join(RAIZ, 'perfil-chrome'); // perfil fixo do navegador (fica so no PC)
 const URL_BANCO = process.env.BANCO_URL
   || 'https://ibpj.sicredi.com.br/ib-view/loginpj/preauth.html';
-const VERSAO = 'extrato v20 (aba-ancora: nao fecha no download)';
+const VERSAO = 'extrato v21 (login com retentativa se cair na home)';
 const espera = (ms) => new Promise(r => setTimeout(r, ms));
 const hoje = () => new Date().toLocaleDateString('sv-SE');
 /* duracao amigavel: "42s" ou "3m 07s" */
@@ -104,31 +104,37 @@ const naOferta = (page) => /oferta|warsaw|diagnostico/i.test(page.url());
    — voltamos para a tela de acesso e tentamos de novo. Com o perfil fixo do
    Chrome, a confianca do dispositivo tende a ficar salva e a passar. */
 async function fazerLogin(page, b) {
-  for (let t = 1; t <= 4; t++) {
-    await page.goto(URL_BANCO, { waitUntil: 'domcontentloaded', timeout: 60000 });
-    await espera(2500);
-    console.log(`Login (tentativa ${t}) 1/2: CNPJ`);
-    await digitarReal(campoTexto(page), b.cnpj);
-    await clicar(page, [/acessar/i], { timeout: 12000 });
-    await espera(4000);
-    if (naOferta(page)) {
-      console.log('  -> caiu na tela do Dispositivo de Seguranca. Nao instalo nada; tento de novo.');
-      await espera(2000);
-      continue;
+  for (let t = 1; t <= 5; t++) {
+    try {
+      await page.goto(URL_BANCO, { waitUntil: 'domcontentloaded', timeout: 60000 });
+      await espera(2500);
+      /* as vezes o preauth cai na home publica (sicredi.com.br) — re-navega
+         direto pra tela de acesso ate 3x */
+      for (let r = 0; r < 3 && !/preauth|loginpj|ib-view/i.test(page.url()); r++) {
+        await clicar(page, [/acessar sua conta/i, /acesse sua conta/i, /^acessar$/i], { timeout: 4000 }).catch(() => {});
+        await espera(1500);
+        if (!/preauth|loginpj|ib-view/i.test(page.url())) { await page.goto(URL_BANCO, { waitUntil: 'domcontentloaded' }).catch(() => {}); await espera(2000); }
+      }
+      console.log(`Login (tentativa ${t}) 1/2: CNPJ`);
+      const cnpj = campoTexto(page);
+      await cnpj.waitFor({ state: 'visible', timeout: 12000 });
+      await digitarReal(cnpj, b.cnpj);
+      await clicar(page, [/acessar/i], { timeout: 12000 });
+      await espera(4000);
+      if (naOferta(page)) { console.log('  -> Dispositivo de Seguranca. Nao instalo nada; tento de novo.'); await espera(2000); continue; }
+      console.log('Login 2/2: usuario e senha (teclado da tela)');
+      await digitarReal(campoTexto(page), b.login);
+      await espera(600);
+      await senhaPeloTeclado(page, b.senha);
+      await espera(500);
+      await clicar(page, [/acessar/i], { timeout: 12000 });
+      await espera(6000);
+      if (naOferta(page)) { console.log('  -> Dispositivo de Seguranca depois da senha. Tento de novo.'); await espera(2000); continue; }
+      return true; // entrou
+    } catch (e) {
+      console.log(`  tentativa ${t} nao completou (${String(e.message).split('\n')[0]}); tentando de novo...`);
+      await espera(2500);
     }
-    console.log('Login 2/2: usuario e senha (teclado da tela)');
-    await digitarReal(campoTexto(page), b.login);
-    await espera(600);
-    await senhaPeloTeclado(page, b.senha);
-    await espera(500);
-    await clicar(page, [/acessar/i], { timeout: 12000 });
-    await espera(6000);
-    if (naOferta(page)) {
-      console.log('  -> Dispositivo de Seguranca depois da senha. Tento de novo.');
-      await espera(2000);
-      continue;
-    }
-    return true; // entrou
   }
   throw new Error('O Sicredi ficou preso na tela do "Dispositivo de Seguranca" '
     + '(ofertaWarsaw.html) e nao deixou passar para a conta. Esse e o anti-fraude '
