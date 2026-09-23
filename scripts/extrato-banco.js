@@ -28,7 +28,7 @@ const PASTA = path.join(RAIZ, 'extratos');
 const PERFIL = path.join(RAIZ, 'perfil-chrome'); // perfil fixo do navegador (fica so no PC)
 const URL_BANCO = process.env.BANCO_URL
   || 'https://ibpj.sicredi.com.br/ib-view/loginpj/preauth.html';
-const VERSAO = 'extrato v19 (filtro exato, considera o digito da conta)';
+const VERSAO = 'extrato v20 (aba-ancora: nao fecha no download)';
 const espera = (ms) => new Promise(r => setTimeout(r, ms));
 const hoje = () => new Date().toLocaleDateString('sv-SE');
 /* duracao amigavel: "42s" ou "3m 07s" */
@@ -420,17 +420,14 @@ async function baixarPlanilha(page, conta) {
   const dlPromise = page.context().waitForEvent('download', { timeout: 60000 });
   await clicar(page, [/gerar planilha/i, /planilha/i, /exportar/i], { timeout: 15000 });
   const download = await dlPromise;
-  const sugerido = download.suggestedFilename() || 'extrato.xls';
-  const ext = path.extname(sugerido) || '.xls';
+  const ext = path.extname(download.suggestedFilename() || '') || '.xls';
   const destino = path.join(PASTA, `extrato_${limpo(conta.label)}_${hoje()}${ext}`);
-  try {
-    await download.saveAs(destino);
-  } catch (e) {
-    /* se a pagina/aba fechou durante o saveAs, o arquivo ja pode estar no
-       diretorio temporario de downloads — copia de la */
+  /* saveAs/path funcionam mesmo se a aba do banco fechar, porque a aba-ancora
+     mantem o CONTEXTO vivo (o download fica preso ao contexto, nao a aba) */
+  try { await download.saveAs(destino); }
+  catch (e) {
     const tmp = await download.path().catch(() => null);
-    if (tmp) fs.copyFileSync(tmp, destino);
-    else throw e;
+    if (tmp) fs.copyFileSync(tmp, destino); else throw e;
   }
   return path.basename(destino);
 }
@@ -456,7 +453,10 @@ async function main() {
     console.log('(Chrome nao encontrado — usando o navegador embutido)');
     ctx = await chromium.launchPersistentContext(PERFIL, opts);
   }
-  const page = ctx.pages()[0] || await ctx.newPage();
+  let page = ctx.pages()[0] || await ctx.newPage();
+  /* aba-ancora: uma pagina em branco sempre aberta, para o CONTEXTO nao fechar
+     quando o banco fecha a aba do download (era o "browser has been closed"). */
+  try { const ancora = await ctx.newPage(); await ancora.goto('about:blank').catch(() => {}); } catch { /* */ }
   const ok = [], falhou = [];
   try {
     await fazerLogin(page, b);
@@ -508,6 +508,9 @@ async function main() {
     for (const conta of contas) {
       const tc = Date.now();
       try {
+        /* se a aba de trabalho fechou (o banco fecha depois de gerar a
+           planilha), recria uma — a sessao continua logada no perfil */
+        if (page.isClosed()) { page = await ctx.newPage(); await espera(1500); }
         console.log(`Conta ${conta.label} — selecionando...`);
         if (modo === 'todas') await selecionarContaModal(page, conta);
         else await selecionarConta(page, sw, conta);
