@@ -28,3 +28,6 @@ extratos/
 
 # Perfil do navegador do robo do extrato (fica so no PC)
 perfil-chrome/
+
+# Downloads temporarios do robo do extrato
+.dl/

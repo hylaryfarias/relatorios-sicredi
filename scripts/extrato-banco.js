@@ -28,7 +28,7 @@ const PASTA = path.join(RAIZ, 'extratos');
 const PERFIL = path.join(RAIZ, 'perfil-chrome'); // perfil fixo do navegador (fica so no PC)
 const URL_BANCO = process.env.BANCO_URL
   || 'https://ibpj.sicredi.com.br/ib-view/loginpj/preauth.html';
-const VERSAO = 'extrato v22 (bloqueia window.close no download)';
+const VERSAO = 'extrato v23 (download lido do disco, a prova de fechamento)';
 const espera = (ms) => new Promise(r => setTimeout(r, ms));
 const hoje = () => new Date().toLocaleDateString('sv-SE');
 /* duracao amigavel: "42s" ou "3m 07s" */
@@ -421,21 +421,43 @@ async function selecionarContaModal(page, c) {
   await espera(2500);
 }
 
+const DLDIR = path.join(RAIZ, '.dl'); // pasta de downloads do Playwright (controlada)
+function snapDL() {
+  try { return new Map(fs.readdirSync(DLDIR).map(f => [f, fs.statSync(path.join(DLDIR, f)).mtimeMs])); }
+  catch { return new Map(); }
+}
+function novoDL(antes) {
+  try {
+    const novos = fs.readdirSync(DLDIR)
+      .map(f => ({ f, t: fs.statSync(path.join(DLDIR, f)).mtimeMs, sz: fs.statSync(path.join(DLDIR, f)).size }))
+      .filter(x => x.sz > 0 && (!antes.has(x.f) || antes.get(x.f) !== x.t))
+      .sort((a, b) => b.t - a.t);
+    return novos.length ? path.join(DLDIR, novos[0].f) : null;
+  } catch { return null; }
+}
+
 async function baixarPlanilha(page, conta) {
+  const destino = path.join(PASTA, `extrato_${limpo(conta.label)}_${hoje()}.xls`);
+  const antes = snapDL();
   /* escuta o download no CONTEXTO (pega tambem se abrir em outra aba/popup) */
-  const dlPromise = page.context().waitForEvent('download', { timeout: 60000 });
+  const dlPromise = page.context().waitForEvent('download', { timeout: 60000 }).catch(() => null);
   await clicar(page, [/gerar planilha/i, /planilha/i, /exportar/i], { timeout: 15000 });
   const download = await dlPromise;
-  const ext = path.extname(download.suggestedFilename() || '') || '.xls';
-  const destino = path.join(PASTA, `extrato_${limpo(conta.label)}_${hoje()}${ext}`);
-  /* saveAs/path funcionam mesmo se a aba do banco fechar, porque a aba-ancora
-     mantem o CONTEXTO vivo (o download fica preso ao contexto, nao a aba) */
-  try { await download.saveAs(destino); }
-  catch (e) {
+  if (download) {
+    const ext = path.extname(download.suggestedFilename() || '') || '.xls';
+    const dest = destino.replace(/\.xls$/i, ext);
+    try { await download.saveAs(dest); return path.basename(dest); } catch { /* aba fechou */ }
     const tmp = await download.path().catch(() => null);
-    if (tmp) fs.copyFileSync(tmp, destino); else throw e;
+    if (tmp) { fs.copyFileSync(tmp, dest); return path.basename(dest); }
   }
-  return path.basename(destino);
+  /* plano B: mesmo com a aba/janela fechando, o Chrome ja gravou o arquivo na
+     pasta de downloads — acha o mais novo e copia */
+  for (let i = 0; i < 12; i++) {
+    const arq = novoDL(antes);
+    if (arq) { fs.copyFileSync(arq, destino); return path.basename(destino); }
+    await espera(1000);
+  }
+  throw new Error('download nao encontrado (a aba fechou antes de salvar)');
 }
 
 async function main() {
@@ -451,7 +473,8 @@ async function main() {
      do dispositivo fica salva no perfil entre execucoes, reduzindo a tela do
      ofertaWarsaw. --disable-http2 evita o ERR_HTTP2_PROTOCOL_ERROR no login. */
   const args = ['--disable-http2', '--disable-blink-features=AutomationControlled'];
-  const opts = { headless: false, slowMo: 120, acceptDownloads: true, viewport: null, args };
+  fs.mkdirSync(DLDIR, { recursive: true });
+  const opts = { headless: false, slowMo: 120, acceptDownloads: true, viewport: null, args, downloadsPath: DLDIR };
   let ctx;
   try {
     ctx = await chromium.launchPersistentContext(PERFIL, { channel: 'chrome', ...opts });
