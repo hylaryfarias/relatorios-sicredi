@@ -28,7 +28,7 @@ const PASTA = path.join(RAIZ, 'extratos');
 const PERFIL = path.join(RAIZ, 'perfil-chrome'); // perfil fixo do navegador (fica so no PC)
 const URL_BANCO = process.env.BANCO_URL
   || 'https://ibpj.sicredi.com.br/ib-view/loginpj/preauth.html';
-const VERSAO = 'extrato v21 (login com retentativa se cair na home)';
+const VERSAO = 'extrato v22 (bloqueia window.close no download)';
 const espera = (ms) => new Promise(r => setTimeout(r, ms));
 const hoje = () => new Date().toLocaleDateString('sv-SE');
 /* duracao amigavel: "42s" ou "3m 07s" */
@@ -459,9 +459,13 @@ async function main() {
     console.log('(Chrome nao encontrado — usando o navegador embutido)');
     ctx = await chromium.launchPersistentContext(PERFIL, opts);
   }
+  /* bloqueia window.close(): algumas contas (ex.: SICA) fazem o site fechar a
+     propria janela depois de gerar a planilha, derrubando o navegador antes de
+     salvar. Neutralizar window.close impede esse fechamento. */
+  await ctx.addInitScript(() => { try { window.close = function () {}; } catch (e) { /* */ } });
   let page = ctx.pages()[0] || await ctx.newPage();
-  /* aba-ancora: uma pagina em branco sempre aberta, para o CONTEXTO nao fechar
-     quando o banco fecha a aba do download (era o "browser has been closed"). */
+  /* aba-ancora: uma pagina em branco sempre aberta, reforco para o contexto
+     nao fechar caso alguma aba seja fechada mesmo assim */
   try { const ancora = await ctx.newPage(); await ancora.goto('about:blank').catch(() => {}); } catch { /* */ }
   const ok = [], falhou = [];
   try {
