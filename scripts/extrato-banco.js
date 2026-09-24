@@ -28,7 +28,7 @@ const PASTA = path.join(RAIZ, 'extratos');
 const PERFIL = path.join(RAIZ, 'perfil-chrome'); // perfil fixo do navegador (fica so no PC)
 const URL_BANCO = process.env.BANCO_URL
   || 'https://ibpj.sicredi.com.br/ib-view/loginpj/preauth.html';
-const VERSAO = 'extrato v23 (download lido do disco, a prova de fechamento)';
+const VERSAO = 'extrato v24 (reabre e continua se o navegador cair)';
 const espera = (ms) => new Promise(r => setTimeout(r, ms));
 const hoje = () => new Date().toLocaleDateString('sv-SE');
 /* duracao amigavel: "42s" ou "3m 07s" */
@@ -475,25 +475,21 @@ async function main() {
   const args = ['--disable-http2', '--disable-blink-features=AutomationControlled'];
   fs.mkdirSync(DLDIR, { recursive: true });
   const opts = { headless: false, slowMo: 120, acceptDownloads: true, viewport: null, args, downloadsPath: DLDIR };
-  let ctx;
-  try {
-    ctx = await chromium.launchPersistentContext(PERFIL, { channel: 'chrome', ...opts });
-  } catch (e) {
-    console.log('(Chrome nao encontrado — usando o navegador embutido)');
-    ctx = await chromium.launchPersistentContext(PERFIL, opts);
-  }
-  /* bloqueia window.close(): algumas contas (ex.: SICA) fazem o site fechar a
-     propria janela depois de gerar a planilha, derrubando o navegador antes de
-     salvar. Neutralizar window.close impede esse fechamento. */
-  await ctx.addInitScript(() => { try { window.close = function () {}; } catch (e) { /* */ } });
-  let page = ctx.pages()[0] || await ctx.newPage();
-  /* aba-ancora: uma pagina em branco sempre aberta, reforco para o contexto
-     nao fechar caso alguma aba seja fechada mesmo assim */
-  try { const ancora = await ctx.newPage(); await ancora.goto('about:blank').catch(() => {}); } catch { /* */ }
+  /* abre o navegador + login — reutilizavel para REABRIR se ele cair no meio
+     (algumas contas fazem o site fechar o Chrome ao gerar a planilha) */
+  const novoNavegador = async () => {
+    let c;
+    try { c = await chromium.launchPersistentContext(PERFIL, { channel: 'chrome', ...opts }); }
+    catch { console.log('(Chrome nao encontrado — usando o navegador embutido)'); c = await chromium.launchPersistentContext(PERFIL, opts); }
+    const p = c.pages()[0] || await c.newPage();
+    await fazerLogin(p, b);
+    return { c, p };
+  };
+  const morreu = (e) => /closed|crash|Target|Session closed|context or browser|has been closed/i.test(String((e && e.message) || e));
+  let ctx, page;
+  ({ c: ctx, p: page } = await novoNavegador());
   const ok = [], falhou = [];
   try {
-    await fazerLogin(page, b);
-
     /* lista COMPLETA de contas pela janela "Pesquisar Contas" (Ver Mais).
        Se nao conseguir abrir, cai para o seletor do topo (so as favoritas). */
     let contas = [], sw = null, modo = 'todas';
@@ -540,33 +536,43 @@ async function main() {
 
     for (const conta of contas) {
       const tc = Date.now();
-      try {
-        /* se a aba de trabalho fechou (o banco fecha depois de gerar a
-           planilha), recria uma — a sessao continua logada no perfil */
-        if (page.isClosed()) { page = await ctx.newPage(); await espera(1500); }
-        console.log(`Conta ${conta.label} — selecionando...`);
-        if (modo === 'todas') await selecionarContaModal(page, conta);
-        else await selecionarConta(page, sw, conta);
-        /* trocar de conta volta para a Pagina Inicial: reabre o Extrato dela */
-        await espera(1500);
-        await abrirExtrato(page);
-        await ajustarPeriodo(page, periodo);
-        /* Pesquisar/Consultar e opcional: em algumas telas o extrato ja aparece */
-        try { await clicar(page, [/pesquisar/i, /consultar/i, /buscar/i, /filtrar/i, /aplicar/i, /visualizar/i], { timeout: 6000 }); }
-        catch { /* extrato ja carregado */ }
-        await espera(3000);
-        const nome = await baixarPlanilha(page, conta);
-        console.log(`  ok: ${nome} (${dur(Date.now() - tc)})`);
-        ok.push(conta.label);
-      } catch (e) {
-        console.error(`  FALHOU ${conta.label}: ${e.message}`);
-        try { await page.screenshot({ path: path.join(PASTA, `erro_${limpo(conta.label)}_${hoje()}.png`), fullPage: true }); } catch { /* */ }
-        falhou.push(conta.label);
-        /* tenta reabrir o extrato para a proxima conta nao herdar o estado ruim */
-        try { await abrirExtrato(page); } catch { /* */ }
+      let feito = false;
+      for (let tent = 1; tent <= 2 && !feito; tent++) {
+        try {
+          if (page.isClosed()) { page = await ctx.newPage(); await espera(1000); }
+          console.log(`Conta ${conta.label} — selecionando...`);
+          if (modo === 'todas') await selecionarContaModal(page, conta);
+          else await selecionarConta(page, sw, conta);
+          /* trocar de conta volta para a Pagina Inicial: reabre o Extrato dela */
+          await espera(1500);
+          await abrirExtrato(page);
+          await ajustarPeriodo(page, periodo);
+          /* Pesquisar/Consultar e opcional: em algumas telas o extrato ja aparece */
+          try { await clicar(page, [/pesquisar/i, /consultar/i, /buscar/i, /filtrar/i, /aplicar/i, /visualizar/i], { timeout: 6000 }); }
+          catch { /* extrato ja carregado */ }
+          await espera(3000);
+          const nome = await baixarPlanilha(page, conta);
+          console.log(`  ok: ${nome} (${dur(Date.now() - tc)})`);
+          ok.push(conta.label); feito = true;
+        } catch (e) {
+          /* se o navegador CAIU, reabre e re-loga, e continua (retenta esta conta
+             uma vez; se cair de novo, marca falha e segue para a proxima) */
+          if (morreu(e)) {
+            console.log(`  navegador caiu em ${conta.label} (${String(e.message).split('\n')[0]}) — reabrindo...`);
+            try { await ctx.close(); } catch { /* */ }
+            try { ({ c: ctx, p: page } = await novoNavegador()); }
+            catch (e2) { console.error(`  nao consegui reabrir: ${e2.message}`); falhou.push(conta.label); feito = true; }
+            continue; // retenta a mesma conta com o navegador novo
+          }
+          console.error(`  FALHOU ${conta.label}: ${e.message}`);
+          try { await page.screenshot({ path: path.join(PASTA, `erro_${limpo(conta.label)}_${hoje()}.png`), fullPage: true }); } catch { /* */ }
+          falhou.push(conta.label); feito = true;
+          try { await abrirExtrato(page); } catch { /* */ }
+        }
       }
+      if (!feito) falhou.push(conta.label); // caiu 2x seguidas
     }
-    await ctx.close();
+    try { await ctx.close(); } catch { /* */ }
   } catch (e) {
     try {
       await page.screenshot({ path: path.join(PASTA, `erro_${hoje()}.png`), fullPage: true });
