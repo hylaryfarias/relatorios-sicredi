@@ -32,7 +32,7 @@ const PERFIL = path.join(RAIZ, 'perfil-bradesco');
 const URL_BANCO = process.env.BRADESCO_URL
   || 'https://www.ne12.bradesconetempresa.b.br/ibpjlogin/login.jsf';
 const PERIODO = process.env.BRADESCO_PERIODO || '5'; // 2, 5, 30, 60 ou 90 dias
-const VERSAO = 'bradesco v2.1 (Chrome sem cara de robo: sem --no-sandbox nem --enable-automation)';
+const VERSAO = 'bradesco v2.2 (procura empresas em todos os frames + diagnostico)';
 const espera = (ms) => new Promise(r => setTimeout(r, ms));
 const hoje = () => new Date().toLocaleDateString('sv-SE');
 const dur = (ms) => { const s = Math.round(ms / 1000); return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, '0')}s`; };
@@ -110,13 +110,51 @@ async function fazerLogin(page, b) {
   throw new Error('Nao detectei a pagina inicial apos o login. O "Nao sou um robo" foi resolvido?');
 }
 
+/* O Bradesco Net Empresa usa varios frames/iframes. Acha em QUAL frame (ou na
+   propria page) estao as linhas de empresa (linhas de tabela com CNPJ). */
+async function frameComEmpresas(page) {
+  const conta = ctx => ctx.evaluate(() => {
+    const re = /\d{2}\.\d{3}\.\d{3}\/\d{4}-\d{2}/;
+    return Array.from(document.querySelectorAll('tr')).filter(tr => re.test(tr.textContent || '')).length;
+  }).catch(() => 0);
+  let best = page, bestN = await conta(page);
+  for (const fr of page.frames()) { const n = await conta(fr); if (n > bestN) { bestN = n; best = fr; } }
+  return { ctx: best, n: bestN };
+}
+
+/* diagnostico: despeja o que cada frame tem, para achar onde esta a lista */
+async function dumpFrames(page) {
+  try {
+    const linhas = [];
+    for (const fr of [page, ...page.frames()]) {
+      const url = (fr.url && fr.url()) || '(page)';
+      const info = await fr.evaluate(() => {
+        const re = /\d{2}\.\d{3}\.\d{3}\/\d{4}-\d{2}/;
+        const b = document.body ? document.body.innerText.replace(/\s+/g, ' ') : '';
+        return {
+          trs: document.querySelectorAll('tr').length,
+          cnpjTrs: Array.from(document.querySelectorAll('tr')).filter(t => re.test(t.textContent || '')).length,
+          temEmpresas: /acessar outras empresas|grupo de empresas/i.test(b),
+          amostra: b.slice(0, 220),
+        };
+      }).catch(() => null);
+      linhas.push(`FRAME: ${url}\n  ${info ? JSON.stringify(info) : '(sem acesso)'}`);
+    }
+    fs.writeFileSync(path.join(PASTA, 'bradesco_frames_debug.txt'), linhas.join('\n\n'), 'utf8');
+    await page.screenshot({ path: path.join(PASTA, `bradesco_frames_${hoje()}.png`), fullPage: true }).catch(() => {});
+    console.log('(despejei o diagnostico dos frames em extratos-bradesco\\bradesco_frames_debug.txt)');
+  } catch { /* */ }
+}
+
 /* le a lista completa de empresas do modal "Acessar outras empresas".
-   O Bradesco renderiza todas as linhas no DOM (a barra e so rolagem CSS),
-   entao da para ler todas de uma vez. Retorna [{nome, cnpj}]. */
+   O Bradesco renderiza as linhas no DOM (a barra e so rolagem CSS), possivelmente
+   dentro de um iframe — por isso procura em todos os frames. Retorna [{nome, cnpj}]. */
 async function lerEmpresas(page) {
   await clicar(page, [/acessar outras empresas/i], { timeout: 15000 });
-  await espera(2500);
-  const empresas = await page.evaluate(() => {
+  await espera(3500);
+  const { ctx, n } = await frameComEmpresas(page);
+  if (!n) { await dumpFrames(page); return []; }
+  const empresas = await ctx.evaluate(() => {
     const reCnpj = /\d{2}\.\d{3}\.\d{3}\/\d{4}-\d{2}/;
     const map = new Map();
     for (const tr of Array.from(document.querySelectorAll('tr'))) {
@@ -147,9 +185,11 @@ async function dispensarNuvem(page) {
 /* troca para a empresa `emp` pelo modal "Acessar outras empresas" */
 async function trocarEmpresa(page, emp) {
   await clicar(page, [/acessar outras empresas/i], { timeout: 15000 });
-  await espera(2000);
+  await espera(2500);
+  /* a lista pode estar num iframe: acha o frame certo e clica ali */
+  const { ctx } = await frameComEmpresas(page);
   /* a linha e unica pelo CNPJ; clica o nome (1a celula) dela */
-  const row = page.locator('tr').filter({ hasText: emp.cnpj }).first();
+  const row = ctx.locator('tr').filter({ hasText: emp.cnpj }).first();
   await row.scrollIntoViewIfNeeded().catch(() => {});
   const link = row.locator('a').first();
   if (await link.count().catch(() => 0)) await link.click({ timeout: 8000 });
