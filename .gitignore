@@ -24,10 +24,13 @@ Thumbs.db
 
 # Credenciais do banco (so no seu PC)
 banco.json
+banco-bradesco.json
 extratos/
+extratos-bradesco/
 
 # Perfil do navegador do robo do extrato (fica so no PC)
 perfil-chrome/
+perfil-bradesco/
 
 # Downloads temporarios do robo do extrato
 .dl/
