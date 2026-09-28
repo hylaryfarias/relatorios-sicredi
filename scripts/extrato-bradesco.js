@@ -32,7 +32,7 @@ const PERFIL = path.join(RAIZ, 'perfil-bradesco');
 const URL_BANCO = process.env.BRADESCO_URL
   || 'https://www.ne12.bradesconetempresa.b.br/ibpjlogin/login.jsf';
 const PERIODO = process.env.BRADESCO_PERIODO || '5'; // 2, 5, 30, 60 ou 90 dias
-const VERSAO = 'bradesco v2.3 (dispensa a nuvem sozinho apos login e antes de cada acao)';
+const VERSAO = 'bradesco v2.4 (nao fecha a caixinha de empresas; seleciona ali mesmo)';
 const espera = (ms) => new Promise(r => setTimeout(r, ms));
 const hoje = () => new Date().toLocaleDateString('sv-SE');
 const dur = (ms) => { const s = Math.round(ms / 1000); return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, '0')}s`; };
@@ -162,15 +162,15 @@ async function lerEmpresas(page) {
       const txt = (tr.textContent || '').replace(/\s+/g, ' ').trim();
       if (!reCnpj.test(txt)) continue;
       const cnpj = (txt.match(reCnpj) || [''])[0];
-      const nome = txt.replace(cnpj, '').replace(/tornar empresa padr[aã]o/i, '').replace(/[?]/g, '').trim();
-      if (cnpj && !map.has(cnpj)) map.set(cnpj, nome);
+      /* o nome e tudo que vem ANTES do CNPJ (evita o "0" do radio "Tornar padrao") */
+      const nome = txt.slice(0, txt.indexOf(cnpj)).replace(/[?]/g, '').trim();
+      if (cnpj && nome && !map.has(cnpj)) map.set(cnpj, nome);
     }
     return [...map.entries()].map(([cnpj, nome]) => ({ nome, cnpj }));
   });
-  /* fecha o modal para voltar a tela normal */
-  await clicar(page, [/^\s*fechar\s*$/i], { timeout: 4000 }).catch(() => {});
-  await page.keyboard.press('Escape').catch(() => {});
-  await espera(1200);
+  /* DEIXA a caixinha ABERTA de proposito: o "Fechar" fica dentro do frame e a
+     troca de empresa e feita clicando na linha aqui mesmo. Fechar/reabrir so
+     dava problema (a caixinha cobria o link "Acessar outras empresas"). */
   return empresas;
 }
 
@@ -194,10 +194,16 @@ async function dispensarNuvem(page) {
 
 /* troca para a empresa `emp` pelo modal "Acessar outras empresas" */
 async function trocarEmpresa(page, emp) {
-  await clicar(page, [/acessar outras empresas/i], { timeout: 15000 });
-  await espera(2500);
-  /* a lista pode estar num iframe: acha o frame certo e clica ali */
-  const { ctx } = await frameComEmpresas(page);
+  /* garante a caixinha de empresas aberta. Na 1a empresa ela ja vem aberta do
+     lerEmpresas; nas seguintes, reabre. n>=2 linhas com CNPJ = caixinha aberta. */
+  let alvo = await frameComEmpresas(page);
+  if (alvo.n < 2) {
+    await dispensarNuvem(page);
+    await clicar(page, [/acessar outras empresas/i], { timeout: 15000 });
+    await espera(3000);
+    alvo = await frameComEmpresas(page);
+  }
+  const ctx = alvo.ctx;
   /* a linha e unica pelo CNPJ; clica o nome (1a celula) dela */
   const row = ctx.locator('tr').filter({ hasText: emp.cnpj }).first();
   await row.scrollIntoViewIfNeeded().catch(() => {});
