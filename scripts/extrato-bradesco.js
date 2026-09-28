@@ -32,7 +32,7 @@ const PERFIL = path.join(RAIZ, 'perfil-bradesco');
 const URL_BANCO = process.env.BRADESCO_URL
   || 'https://www.ne12.bradesconetempresa.b.br/ibpjlogin/login.jsf';
 const PERIODO = process.env.BRADESCO_PERIODO || '5'; // 2, 5, 30, 60 ou 90 dias
-const VERSAO = 'bradesco v2.6 (clica Extrato Ultimos Lancamentos ate abrir o periodo)';
+const VERSAO = 'bradesco v2.7 (corrige acento em Ultimos: acha o Extrato de verdade)';
 const espera = (ms) => new Promise(r => setTimeout(r, ms));
 const hoje = () => new Date().toLocaleDateString('sv-SE');
 const dur = (ms) => { const s = Math.round(ms / 1000); return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, '0')}s`; };
@@ -222,12 +222,16 @@ async function trocarEmpresa(page, emp) {
 async function abrirExtrato(page) {
   /* Pode exigir 2 cliques: "Saldos e Extratos" abre um MENU, e o extrato de
      verdade e o link "Extrato (Ultimos Lancamentos)" (Conta-Corrente). Clica
-     nele ate aparecerem os botoes de periodo (2/5/30/60/90 DIAS). */
+     nele ate aparecerem os botoes de periodo (2/5/30/60/90 DIAS).
+     ATENCAO ao acento: o link e "Extrato (Últimos Lançamentos)" — regex nao
+     ignora acento, entao uso [^)]* no lugar de "ultimos". */
   const rePeriodo = new RegExp(`${PERIODO}\\s*dias`, 'i');
+  const reExtrato = /extrato\s*\([^)]*lan[çc]amentos\)/i;
   for (let i = 0; i < 3; i++) {
-    await clicar(page, [/extrato \(ultimos lan[çc]amentos\)/i, /saldos e extratos/i], { timeout: 15000 }).catch(() => {});
+    if (await page.getByText(rePeriodo).first().isVisible({ timeout: 1500 }).catch(() => false)) break;
+    const clicou = await clicar(page, [reExtrato], { timeout: 6000 }).then(() => true).catch(() => false);
+    if (!clicou) await clicar(page, [/saldos e extratos/i], { timeout: 8000 }).catch(() => {});
     await espera(3000);
-    if (await page.getByText(rePeriodo).first().isVisible({ timeout: 2500 }).catch(() => false)) break;
   }
   /* periodo: 2 / 5 / 30 / 60 / 90 DIAS */
   await clicar(page, [new RegExp(`^\\s*${PERIODO}\\s*dias\\s*$`, 'i'), rePeriodo], { timeout: 8000 });
