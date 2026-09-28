@@ -32,7 +32,7 @@ const PERFIL = path.join(RAIZ, 'perfil-bradesco');
 const URL_BANCO = process.env.BRADESCO_URL
   || 'https://www.ne12.bradesconetempresa.b.br/ibpjlogin/login.jsf';
 const PERIODO = process.env.BRADESCO_PERIODO || '5'; // 2, 5, 30, 60 ou 90 dias
-const VERSAO = 'bradesco v2.8 (dispensa nuvem antes do periodo e do salvar; force click)';
+const VERSAO = 'bradesco v2.9 (tudo frame-aware: extrato e salvar dentro de iframe)';
 const espera = (ms) => new Promise(r => setTimeout(r, ms));
 const hoje = () => new Date().toLocaleDateString('sv-SE');
 const dur = (ms) => { const s = Math.round(ms / 1000); return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, '0')}s`; };
@@ -53,23 +53,31 @@ async function digitarReal(campo, valor) {
   await campo.pressSequentially(String(valor), { delay: 60 });
 }
 
-/* clica o primeiro alvo visivel que casa qualquer um dos textos/regex */
-async function clicar(page, textos, { timeout = 15000 } = {}) {
+/* O Bradesco Net Empresa usa muitos frames/iframes: o conteudo (extrato,
+   periodo, "Salvar como arquivo", lista de empresas) costuma estar DENTRO de um
+   frame, nao na pagina principal. Por isso clicar/procurar varre TODOS os frames. */
+const todosCtx = (page) => [page, ...page.frames()];
+
+/* clica o primeiro alvo visivel que casa qualquer um dos textos/regex, em
+   qualquer frame */
+async function clicar(page, textos, { timeout = 15000, force = false } = {}) {
   const lista = Array.isArray(textos) ? textos : [textos];
   const ini = Date.now();
   while (Date.now() - ini < timeout) {
-    for (const t of lista) {
-      const re = t instanceof RegExp ? t : new RegExp(`^\\s*${t}\\s*$`, 'i');
-      const tentativas = [
-        page.getByRole('button', { name: t }).first(),
-        page.getByRole('link', { name: t }).first(),
-        page.locator('button, a, [role=button], input[type=submit], input[type=button]')
-          .filter({ hasText: re }).first(),
-        page.getByText(re).first(),
-      ];
-      for (const alvo of tentativas) {
-        try { if (await alvo.isVisible({ timeout: 300 })) { await alvo.click(); return true; } }
-        catch { /* segue */ }
+    for (const ctx of todosCtx(page)) {
+      for (const t of lista) {
+        const re = t instanceof RegExp ? t : new RegExp(`^\\s*${t}\\s*$`, 'i');
+        const tentativas = [
+          ctx.getByRole('button', { name: t }).first(),
+          ctx.getByRole('link', { name: t }).first(),
+          ctx.locator('button, a, [role=button], input[type=submit], input[type=button]')
+            .filter({ hasText: re }).first(),
+          ctx.getByText(re).first(),
+        ];
+        for (const alvo of tentativas) {
+          try { if (await alvo.isVisible({ timeout: 200 })) { await alvo.click({ timeout: 5000, force }); return true; } }
+          catch { /* segue */ }
+        }
       }
     }
     await espera(400);
@@ -77,10 +85,18 @@ async function clicar(page, textos, { timeout = 15000 } = {}) {
   throw new Error(`Nao achei para clicar: ${lista.map(String).join(' / ')}`);
 }
 
-/* sinal de que ja entrou (pagina inicial logada) */
+/* devolve o frame (ou page) onde um texto esta visivel, ou null */
+async function frameComTexto(page, re, timeout = 1500) {
+  for (const ctx of todosCtx(page)) {
+    if (await ctx.getByText(re).first().isVisible({ timeout }).catch(() => false)) return ctx;
+  }
+  return null;
+}
+
+/* sinal de que ja entrou (pagina inicial logada) — procura em qualquer frame */
 async function estaLogado(page) {
   for (const re of [/acessar outras empresas/i, /posi[çc][aã]o financeira/i, /saldos e extratos/i]) {
-    if (await page.getByText(re).first().isVisible({ timeout: 600 }).catch(() => false)) return true;
+    if (await frameComTexto(page, re, 600)) return true;
   }
   return false;
 }
@@ -163,7 +179,7 @@ async function lerEmpresas(page) {
       if (!reCnpj.test(txt)) continue;
       const cnpj = (txt.match(reCnpj) || [''])[0];
       /* o nome e tudo que vem ANTES do CNPJ (evita o "0" do radio "Tornar padrao") */
-      const nome = txt.slice(0, txt.indexOf(cnpj)).replace(/[?]/g, '').trim();
+      const nome = txt.slice(0, txt.indexOf(cnpj)).replace(/[?]/g, '').replace(/\s*\d+\s*$/, '').trim();
       if (cnpj && nome && !map.has(cnpj)) map.set(cnpj, nome);
     }
     return [...map.entries()].map(([cnpj, nome]) => ({ nome, cnpj }));
@@ -182,13 +198,12 @@ async function lerEmpresas(page) {
 async function dispensarNuvem(page) {
   await page.keyboard.press('Escape').catch(() => {});
   for (const re of [/boa (tarde|noite|dia)/i, /n[ºo]?\.?\s*de acesso/i, /perfil:/i, /posi[çc][aã]o financeira/i]) {
-    const el = page.getByText(re).first();
-    if (await el.isVisible({ timeout: 800 }).catch(() => false)) {
-      await el.click({ timeout: 2500, force: true }).catch(() => {});
+    const ctx = await frameComTexto(page, re, 500);
+    if (ctx) {
+      await ctx.getByText(re).first().click({ timeout: 2500, force: true }).catch(() => {});
       break;
     }
   }
-  /* reserva: se nao achou nenhum texto conhecido, um clique num ponto neutro */
   await espera(1300);
 }
 
@@ -228,22 +243,19 @@ async function abrirExtrato(page) {
   const rePeriodo = new RegExp(`${PERIODO}\\s*dias`, 'i');
   const reExtrato = /extrato\s*\([^)]*lan[çc]amentos\)/i;
   for (let i = 0; i < 3; i++) {
-    if (await page.getByText(rePeriodo).first().isVisible({ timeout: 1500 }).catch(() => false)) break;
+    if (await frameComTexto(page, rePeriodo, 1500)) break; // ja no extrato (em algum frame)
     const clicou = await clicar(page, [reExtrato], { timeout: 6000 }).then(() => true).catch(() => false);
     if (!clicou) await clicar(page, [/saldos e extratos/i], { timeout: 8000 }).catch(() => {});
     await espera(3000);
   }
   /* periodo: 2 / 5 / 30 / 60 / 90 DIAS. A nuvem intercepta o clique, entao
-     dispensa antes e clica com force. Tenta ate 2x. */
+     dispensa antes e clica com force, no frame certo. Tenta ate 2x. */
   const reExato = new RegExp(`^\\s*${PERIODO}\\s*dias\\s*$`, 'i');
   for (let i = 0; i < 2; i++) {
     await dispensarNuvem(page).catch(() => {});
-    const btn = page.getByText(reExato).first();
-    if (await btn.isVisible({ timeout: 2500 }).catch(() => false)) {
-      await btn.click({ force: true, timeout: 6000 }).catch(() => {});
-    } else {
-      await clicar(page, [reExato, rePeriodo], { timeout: 6000 }).catch(() => {});
-    }
+    const ctx = await frameComTexto(page, reExato, 2500) || await frameComTexto(page, rePeriodo, 1500);
+    if (ctx) await ctx.getByText(reExato).first().click({ force: true, timeout: 6000 }).catch(() => {});
+    else await clicar(page, [reExato, rePeriodo], { timeout: 6000, force: true }).catch(() => {});
     await espera(2500);
   }
 }
@@ -251,12 +263,15 @@ async function abrirExtrato(page) {
 async function baixarXLS(page, emp) {
   const destino = path.join(PASTA, `extrato_bradesco_${limpo(emp.nome)}_${hoje()}.xls`);
   await dispensarNuvem(page).catch(() => {}); // nuvem tambem cobre o "Salvar"
-  const dlPromise = page.context().waitForEvent('download', { timeout: 60000 });
   await clicar(page, [/salvar como arquivo/i], { timeout: 12000 });
   await espera(2000); // abre o modal de formatos
+  /* so agora escuto o download (o arquivo vem ao clicar no XLS). O .catch evita
+     que a promessa fique pendurada e derrube o processo se algo falhar antes. */
+  const dlPromise = page.context().waitForEvent('download', { timeout: 60000 }).catch(() => null);
   /* clica exatamente o XLS (Microsoft Excel) — nao confundir com XMLS/XMLD */
   await clicar(page, [/XLS \(Microsoft Excel\)/i, /^\s*XLS\b(?!\s*\()/i], { timeout: 10000 });
   const download = await dlPromise;
+  if (!download) throw new Error('o download nao veio depois de clicar no XLS');
   const ext = path.extname(download.suggestedFilename() || '') || '.xls';
   const dest = destino.replace(/\.xls$/i, ext);
   try { await download.saveAs(dest); }
