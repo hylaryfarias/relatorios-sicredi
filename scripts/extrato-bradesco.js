@@ -32,7 +32,7 @@ const PERFIL = path.join(RAIZ, 'perfil-bradesco');
 const URL_BANCO = process.env.BRADESCO_URL
   || 'https://www.ne12.bradesconetempresa.b.br/ibpjlogin/login.jsf';
 const PERIODO = process.env.BRADESCO_PERIODO || '5'; // 2, 5, 30, 60 ou 90 dias
-const VERSAO = 'bradesco v2.7 (corrige acento em Ultimos: acha o Extrato de verdade)';
+const VERSAO = 'bradesco v2.8 (dispensa nuvem antes do periodo e do salvar; force click)';
 const espera = (ms) => new Promise(r => setTimeout(r, ms));
 const hoje = () => new Date().toLocaleDateString('sv-SE');
 const dur = (ms) => { const s = Math.round(ms / 1000); return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, '0')}s`; };
@@ -181,7 +181,7 @@ async function lerEmpresas(page) {
    nunca disparamos um link por engano. */
 async function dispensarNuvem(page) {
   await page.keyboard.press('Escape').catch(() => {});
-  for (const re of [/posi[çc][aã]o financeira/i, /lan[çc]amentos futuros/i, /boa (tarde|noite|dia)/i, /n[ºo]?\.?\s*de acesso/i]) {
+  for (const re of [/boa (tarde|noite|dia)/i, /n[ºo]?\.?\s*de acesso/i, /perfil:/i, /posi[çc][aã]o financeira/i]) {
     const el = page.getByText(re).first();
     if (await el.isVisible({ timeout: 800 }).catch(() => false)) {
       await el.click({ timeout: 2500, force: true }).catch(() => {});
@@ -233,13 +233,24 @@ async function abrirExtrato(page) {
     if (!clicou) await clicar(page, [/saldos e extratos/i], { timeout: 8000 }).catch(() => {});
     await espera(3000);
   }
-  /* periodo: 2 / 5 / 30 / 60 / 90 DIAS */
-  await clicar(page, [new RegExp(`^\\s*${PERIODO}\\s*dias\\s*$`, 'i'), rePeriodo], { timeout: 8000 });
-  await espera(2500);
+  /* periodo: 2 / 5 / 30 / 60 / 90 DIAS. A nuvem intercepta o clique, entao
+     dispensa antes e clica com force. Tenta ate 2x. */
+  const reExato = new RegExp(`^\\s*${PERIODO}\\s*dias\\s*$`, 'i');
+  for (let i = 0; i < 2; i++) {
+    await dispensarNuvem(page).catch(() => {});
+    const btn = page.getByText(reExato).first();
+    if (await btn.isVisible({ timeout: 2500 }).catch(() => false)) {
+      await btn.click({ force: true, timeout: 6000 }).catch(() => {});
+    } else {
+      await clicar(page, [reExato, rePeriodo], { timeout: 6000 }).catch(() => {});
+    }
+    await espera(2500);
+  }
 }
 
 async function baixarXLS(page, emp) {
   const destino = path.join(PASTA, `extrato_bradesco_${limpo(emp.nome)}_${hoje()}.xls`);
+  await dispensarNuvem(page).catch(() => {}); // nuvem tambem cobre o "Salvar"
   const dlPromise = page.context().waitForEvent('download', { timeout: 60000 });
   await clicar(page, [/salvar como arquivo/i], { timeout: 12000 });
   await espera(2000); // abre o modal de formatos
