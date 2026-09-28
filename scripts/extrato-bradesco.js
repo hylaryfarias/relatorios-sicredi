@@ -32,7 +32,7 @@ const PERFIL = path.join(RAIZ, 'perfil-bradesco');
 const URL_BANCO = process.env.BRADESCO_URL
   || 'https://www.ne12.bradesconetempresa.b.br/ibpjlogin/login.jsf';
 const PERIODO = process.env.BRADESCO_PERIODO || '5'; // 2, 5, 30, 60 ou 90 dias
-const VERSAO = 'bradesco v2.2 (procura empresas em todos os frames + diagnostico)';
+const VERSAO = 'bradesco v2.3 (dispensa a nuvem sozinho apos login e antes de cada acao)';
 const espera = (ms) => new Promise(r => setTimeout(r, ms));
 const hoje = () => new Date().toLocaleDateString('sv-SE');
 const dur = (ms) => { const s = Math.round(ms / 1000); return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, '0')}s`; };
@@ -150,6 +150,7 @@ async function dumpFrames(page) {
    O Bradesco renderiza as linhas no DOM (a barra e so rolagem CSS), possivelmente
    dentro de um iframe — por isso procura em todos os frames. Retorna [{nome, cnpj}]. */
 async function lerEmpresas(page) {
+  await dispensarNuvem(page); // a nuvem pos-login some so com um clique
   await clicar(page, [/acessar outras empresas/i], { timeout: 15000 });
   await espera(3500);
   const { ctx, n } = await frameComEmpresas(page);
@@ -173,13 +174,22 @@ async function lerEmpresas(page) {
   return empresas;
 }
 
-/* dispensa a "nuvem" (overlay de carregamento) clicando fora do modal */
+/* Dispensa a "nuvem" (overlay que o Bradesco poe na tela depois do login e a
+   cada troca de empresa) — ela so some com um CLIQUE. Clicamos num TEXTO
+   inofensivo (nao-link) e com force:true: se a nuvem estiver por cima, o clique
+   cai nela e a dispensa; se nao houver nuvem, cai no texto, sem efeito. Assim
+   nunca disparamos um link por engano. */
 async function dispensarNuvem(page) {
   await page.keyboard.press('Escape').catch(() => {});
-  /* um clique num ponto neutro da tela (area de conteudo vazia) — se houver
-     overlay, o clique cai nele e o dispensa; se nao houver, cai em area vazia */
-  await page.mouse.click(430, 250).catch(() => {});
-  await espera(1200);
+  for (const re of [/posi[çc][aã]o financeira/i, /lan[çc]amentos futuros/i, /boa (tarde|noite|dia)/i, /n[ºo]?\.?\s*de acesso/i]) {
+    const el = page.getByText(re).first();
+    if (await el.isVisible({ timeout: 800 }).catch(() => false)) {
+      await el.click({ timeout: 2500, force: true }).catch(() => {});
+      break;
+    }
+  }
+  /* reserva: se nao achou nenhum texto conhecido, um clique num ponto neutro */
+  await espera(1300);
 }
 
 /* troca para a empresa `emp` pelo modal "Acessar outras empresas" */
@@ -255,6 +265,7 @@ async function main() {
 
   try {
     await fazerLogin(page, b);
+    await dispensarNuvem(page); // logo apos entrar o Bradesco poe a "nuvem"
 
     let empresas = await lerEmpresas(page);
     if (!empresas.length) {
