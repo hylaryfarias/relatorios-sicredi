@@ -32,7 +32,7 @@ const PERFIL = path.join(RAIZ, 'perfil-bradesco');
 const URL_BANCO = process.env.BRADESCO_URL
   || 'https://www.ne12.bradesconetempresa.b.br/ibpjlogin/login.jsf';
 const PERIODO = process.env.BRADESCO_PERIODO || '5'; // 2, 5, 30, 60 ou 90 dias
-const VERSAO = 'bradesco v2.4 (nao fecha a caixinha de empresas; seleciona ali mesmo)';
+const VERSAO = 'bradesco v2.5 (sem banner de flag; esconde webdriver por script)';
 const espera = (ms) => new Promise(r => setTimeout(r, ms));
 const hoje = () => new Date().toLocaleDateString('sv-SE');
 const dur = (ms) => { const s = Math.round(ms / 1000); return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, '0')}s`; };
@@ -252,12 +252,15 @@ async function main() {
   console.log(`Periodo: ${PERIODO} dias\n`);
   const t0 = Date.now();
 
-  /* Fazer o Chrome do robo parecer o mais normal possivel para o Topaz:
-     - chromiumSandbox:true evita o --no-sandbox (que o Bradesco acusou);
-     - ignoreDefaultArgs remove o --enable-automation (o aviso "controlado por
-       automacao"), mais um sinal que o antifraude procura;
-     - sem --disable-http2 (era so um remendo do Sicredi) para nao destoar. */
-  const args = ['--disable-blink-features=AutomationControlled', '--start-maximized'];
+  /* Fazer o Chrome do robo parecer o mais normal possivel para o Topaz, SEM os
+     flags que disparam o banner amarelo "linha de comando nao suportada" (o
+     banner denuncia a automacao):
+     - chromiumSandbox:true evita o --no-sandbox;
+     - ignoreDefaultArgs remove o --enable-automation;
+     - NAO uso --disable-blink-features (dispara o banner); em vez disso, escondo
+       o navigator.webdriver por script (mesmo efeito, sem banner);
+     - sem --disable-http2 (era so um remendo do Sicredi). */
+  const args = ['--start-maximized'];
   const opts = {
     headless: false, slowMo: 120, acceptDownloads: true, viewport: null, args,
     chromiumSandbox: true,
@@ -266,6 +269,10 @@ async function main() {
   let ctx;
   try { ctx = await chromium.launchPersistentContext(PERFIL, { channel: 'chrome', ...opts }); }
   catch { console.log('(Chrome nao encontrado — usando o navegador embutido)'); ctx = await chromium.launchPersistentContext(PERFIL, opts); }
+  /* esconde a automacao por dentro (sem flag, sem banner) */
+  await ctx.addInitScript(() => {
+    try { Object.defineProperty(navigator, 'webdriver', { get: () => false }); } catch { /* */ }
+  });
   const page = ctx.pages()[0] || await ctx.newPage();
   const ok = [], falhou = [];
 
