@@ -28,7 +28,7 @@ const PASTA = path.join(RAIZ, 'extratos');
 const PERFIL = path.join(RAIZ, 'perfil-chrome'); // perfil fixo do navegador (fica so no PC)
 const URL_BANCO = process.env.BANCO_URL
   || 'https://ibpj.sicredi.com.br/ib-view/loginpj/preauth.html';
-const VERSAO = 'extrato v26 (download simples + reabre so quando o Chrome cai)';
+const VERSAO = 'extrato v27 (varios logins/CNPJs no mesmo banco.json)';
 const espera = (ms) => new Promise(r => setTimeout(r, ms));
 const hoje = () => new Date().toLocaleDateString('sv-SE');
 /* duracao amigavel: "42s" ou "3m 07s" */
@@ -46,6 +46,28 @@ function carregarBanco() {
   const arq = path.join(RAIZ, 'banco.json');
   if (fs.existsSync(arq)) return JSON.parse(fs.readFileSync(arq, 'utf8'));
   throw new Error('Crie o arquivo banco.json com { "cnpj": "...", "login": "...", "senha": "..." }.');
+}
+
+/* Normaliza o banco.json para uma LISTA de acessos. Aceita tres formatos:
+     1) um acesso so:   { "cnpj": "...", "login": "...", "senha": "..." }
+     2) uma lista:      [ { "cnpj": "...", "login": "...", "senha": "..." }, ... ]
+     3) login/senha comuns + varios CNPJs (o caso da Hyly):
+        { "login": "...", "senha": "...", "periodo": "...",
+          "acessos": [ { "cnpj": "CNPJ_1" }, { "cnpj": "CNPJ_2" } ] }
+   No formato 3, cada acesso herda login/senha/periodo do topo — voce so repete
+   o que muda (o CNPJ). */
+function carregarAcessos() {
+  const raw = carregarBanco();
+  const topo = Array.isArray(raw) ? {} : raw;
+  const lista = Array.isArray(raw) ? raw : (Array.isArray(raw.acessos) ? raw.acessos : [raw]);
+  const acessos = lista.map(a => ({
+    cnpj: a.cnpj,
+    login: a.login || topo.login,
+    senha: a.senha || topo.senha,
+    periodo: a.periodo || topo.periodo,
+  })).filter(a => a.cnpj && a.login && a.senha);
+  if (!acessos.length) throw new Error('banco.json sem acesso valido: cada acesso precisa de cnpj, login e senha.');
+  return acessos;
 }
 
 async function digitarReal(campo, valor) {
@@ -141,6 +163,16 @@ async function fazerLogin(page, b) {
     + 'do banco. Tente: (1) rodar de novo — as vezes passa na 2a; (2) abrir o site '
     + 'do banco no seu Chrome normal UMA vez, logar e deixar o dispositivo instalado, '
     + 'depois fechar o Chrome e rodar o robo (ele usa o mesmo Chrome).');
+}
+
+/* sai da sessao atual pela propria tela (mantem o dispositivo confiavel, pra nao
+   re-disparar o "Dispositivo de Seguranca" no proximo login). Best-effort. */
+async function deslogar(page) {
+  try {
+    await clicar(page, [/^\s*sair\s*$/i, /encerrar sess/i, /sair com seguran/i, /^\s*logout\s*$/i], { timeout: 6000 });
+    await espera(2500);
+    return true;
+  } catch { return false; }
 }
 
 async function abrirExtrato(page) {
@@ -438,11 +470,10 @@ async function baixarPlanilha(page, conta) {
 }
 
 async function main() {
-  const b = carregarBanco();
-  const periodo = process.env.BANCO_PERIODO || b.periodo || 'Últimos 7 dias';
+  const acessos = carregarAcessos();
   fs.mkdirSync(PASTA, { recursive: true });
   console.log(`\n=== Robo Extrato ${VERSAO} ===`);
-  console.log(`Periodo: ${periodo}\n`);
+  if (acessos.length > 1) console.log(`Logins a processar: ${acessos.length} (${acessos.map(a => a.cnpj).join(', ')})`);
   const t0 = Date.now();
 
   /* Perfil FIXO do Chrome instalado (channel:'chrome'): o Dispositivo de
@@ -451,114 +482,142 @@ async function main() {
      ofertaWarsaw. --disable-http2 evita o ERR_HTTP2_PROTOCOL_ERROR no login. */
   const args = ['--disable-http2', '--disable-blink-features=AutomationControlled'];
   const opts = { headless: false, slowMo: 120, acceptDownloads: true, viewport: null, args };
-  /* abre navegador + login. Reutilizavel para REABRIR se o Chrome cair no meio
-     (o anti-fraude do banco fecha o Chrome ao gerar a planilha em algumas contas).
-     Sem downloadsPath: com ele a queda vira frequente. */
-  const novoNavegador = async () => {
+  const morreu = (e) => /closed|crash|Target|Session closed|context or browser|has been closed/i.test(String((e && e.message) || e));
+
+  /* rodar so algumas contas: passe os numeros na linha de comando (vale para
+     todos os logins). Ha contas com o MESMO numero e digito diferente
+     (63923-4 e 63923-8), entao:
+       - com digito casa EXATO so aquela conta:  node ...\\extrato-banco.js 63923-4
+       - sem digito casa todas com aquele numero: node ...\\extrato-banco.js 63923 */
+  const filtros = process.argv.slice(2).map(s => s.replace(/\D/g, '')).filter(Boolean);
+
+  /* acesso ATUAL (login de agora): novoNavegador() reloga nele ao reabrir apos
+     uma queda do Chrome. So abrir o navegador (sem logar) fica em abrirNavegador. */
+  let acesso = acessos[0];
+  const abrirNavegador = async () => {
     let c;
     try { c = await chromium.launchPersistentContext(PERFIL, { channel: 'chrome', ...opts }); }
     catch { console.log('(Chrome nao encontrado — usando o navegador embutido)'); c = await chromium.launchPersistentContext(PERFIL, opts); }
     const p = c.pages()[0] || await c.newPage();
-    await fazerLogin(p, b);
     return { c, p };
   };
-  const morreu = (e) => /closed|crash|Target|Session closed|context or browser|has been closed/i.test(String((e && e.message) || e));
+  const novoNavegador = async () => { const { c, p } = await abrirNavegador(); await fazerLogin(p, acesso); return { c, p }; };
+
   let ctx, page;
   ({ c: ctx, p: page } = await novoNavegador());
   const ok = [], falhou = [];
-  try {
-    /* lista COMPLETA de contas pela janela "Pesquisar Contas" (Ver Mais).
-       Se nao conseguir abrir, cai para o seletor do topo (so as favoritas). */
-    let contas = [], sw = null, modo = 'todas';
-    if (await abrirPesquisarContas(page)) contas = await lerTabelaContas(page);
-    if (!contas.length) {
-      /* nao abriu a lista completa: guarda print + despejo do HTML para ajustar */
-      try { await page.screenshot({ path: path.join(PASTA, `ver_mais_${hoje()}.png`), fullPage: true }); } catch { /* */ }
-      await dumpSeletor(page);
-      console.log('(nao consegui abrir o "Ver Mais"; usando so as favoritas.');
-      console.log(' Me mande o arquivo extratos\\ver_mais_debug.txt para eu acertar o clique.)');
-      modo = 'favoritas';
-      await abrirExtrato(page).catch(() => {});
-      sw = await descobrirContas(page);
-      if (sw) contas = sw.contas;
-    }
-    if (!contas.length) {
-      await page.screenshot({ path: path.join(PASTA, `contas_nao_achei_${hoje()}.png`), fullPage: true });
-      throw new Error('Nao achei a lista de contas. Salvei um print em '
-        + 'extratos\\contas_nao_achei_...png — me mande esse print para eu acertar o seletor.');
-    }
-    console.log(`Contas encontradas (${contas.length}) [${modo === 'todas' ? 'lista completa' : 'so favoritas'}]:`);
-    contas.forEach(c => console.log(`  - ${c.label}`));
 
-    /* rodar so algumas contas: passe os numeros na linha de comando. Ha contas
-       com o MESMO numero e digito diferente (63923-4 e 63923-8), entao:
-         - com digito casa EXATO so aquela conta:  node ...\\extrato-banco.js 63923-4
-         - sem digito casa todas com aquele numero: node ...\\extrato-banco.js 63923
-       Ex.: node scripts\\extrato-banco.js 71532-6 63896-7 */
-    const filtros = process.argv.slice(2).map(s => s.replace(/\D/g, '')).filter(Boolean);
-    if (filtros.length) {
-      const full = c => String(c.conta || c.label || '').replace(/\D/g, '');   // 639234 (com digito)
-      const base = c => String(c.conta || c.label || '').split('-')[0].replace(/\D/g, ''); // 63923
-      /* casa EXATO: pelo numero completo (com digito) OU, se voce passou so o
-         numero sem digito, pela base — nunca "contém", pra nao pegar conta parecida */
-      contas = contas.filter(c => filtros.some(f => f === full(c) || f === base(c)));
-      if (!contas.length) {
-        console.log(`Nenhuma das contas pedidas (${filtros.join(', ')}) esta na lista${modo === 'todas' ? '' : ' de favoritas'}.`
-          + (modo === 'todas' ? '' : ' O "Ver Mais" nao abriu, entao so as 5 favoritas foram lidas — rode de novo para pegar a lista completa.'));
-      } else {
-        console.log(`Filtrando para ${contas.length} conta(s): ${contas.map(c => c.label).join(', ')}`);
+  for (let ia = 0; ia < acessos.length; ia++) {
+    acesso = acessos[ia];
+    const periodo = process.env.BANCO_PERIODO || acesso.periodo || 'Últimos 7 dias';
+    if (acessos.length > 1) console.log(`\n===== Login ${ia + 1}/${acessos.length} — CNPJ ${acesso.cnpj} =====`);
+    console.log(`Periodo: ${periodo}`);
+
+    /* troca de login: sai da sessao anterior e entra no novo CNPJ. Tenta sair
+       pela tela (mantem o dispositivo confiavel); se nao der, limpa cookies.
+       Se ainda assim travar, reabre o navegador limpo. */
+    if (ia > 0) {
+      try {
+        const saiu = await deslogar(page).catch(() => false);
+        if (!saiu) await ctx.clearCookies().catch(() => {});
+        await fazerLogin(page, acesso);
+      } catch {
+        console.log('  reabrindo o navegador para trocar de login...');
+        try { await ctx.close(); } catch { /* */ }
+        ({ c: ctx, p: page } = await abrirNavegador());
+        try { await ctx.clearCookies(); } catch { /* */ }
+        await fazerLogin(page, acesso);
       }
     }
-    console.log('');
 
-    for (const conta of contas) {
-      const tc = Date.now();
-      let feito = false;
-      for (let tent = 1; tent <= 2 && !feito; tent++) {
-        try {
-          if (page.isClosed()) page = await ctx.newPage();
-          console.log(`Conta ${conta.label} — selecionando...`);
-          if (modo === 'todas') await selecionarContaModal(page, conta);
-          else await selecionarConta(page, sw, conta);
-          /* trocar de conta volta para a Pagina Inicial: reabre o Extrato dela */
-          await espera(1500);
-          await abrirExtrato(page);
-          await ajustarPeriodo(page, periodo);
-          /* Pesquisar/Consultar e opcional: em algumas telas o extrato ja aparece */
-          try { await clicar(page, [/pesquisar/i, /consultar/i, /buscar/i, /filtrar/i, /aplicar/i, /visualizar/i], { timeout: 6000 }); }
-          catch { /* extrato ja carregado */ }
-          await espera(3000);
-          const nome = await baixarPlanilha(page, conta);
-          console.log(`  ok: ${nome} (${dur(Date.now() - tc)})`);
-          ok.push(conta.label); feito = true;
-        } catch (e) {
-          /* o Chrome caiu (banco fechou na hora da planilha): reabre, re-loga e
-             RETENTA esta mesma conta uma vez. A lista de contas ja esta na memoria
-             e a selecao e por URL, entao a proxima conta continua normal. */
-          if (morreu(e) && tent < 2) {
-            console.log(`  o navegador fechou em ${conta.label} — reabrindo e tentando de novo...`);
-            try { await ctx.close(); } catch { /* */ }
-            try { ({ c: ctx, p: page } = await novoNavegador()); }
-            catch (e2) { console.error(`  nao consegui reabrir: ${e2.message.split('\n')[0]}`); falhou.push(conta.label); feito = true; }
-            continue;
-          }
-          console.error(`  FALHOU ${conta.label}: ${e.message.split('\n')[0]}`);
-          try { await page.screenshot({ path: path.join(PASTA, `erro_${limpo(conta.label)}_${hoje()}.png`), fullPage: true }); } catch { /* */ }
-          /* se caiu na 2a tentativa, reabre pra proxima conta nao cascatear */
-          if (morreu(e)) { try { await ctx.close(); } catch { /* */ } try { ({ c: ctx, p: page } = await novoNavegador()); } catch { /* */ } }
-          falhou.push(conta.label); feito = true;
+    try {
+      /* lista COMPLETA de contas pela janela "Pesquisar Contas" (Ver Mais).
+         Se nao conseguir abrir, cai para o seletor do topo (so as favoritas). */
+      let contas = [], sw = null, modo = 'todas';
+      if (await abrirPesquisarContas(page)) contas = await lerTabelaContas(page);
+      if (!contas.length) {
+        /* nao abriu a lista completa: guarda print + despejo do HTML para ajustar */
+        try { await page.screenshot({ path: path.join(PASTA, `ver_mais_${hoje()}.png`), fullPage: true }); } catch { /* */ }
+        await dumpSeletor(page);
+        console.log('(nao consegui abrir o "Ver Mais"; usando so as favoritas.');
+        console.log(' Me mande o arquivo extratos\\ver_mais_debug.txt para eu acertar o clique.)');
+        modo = 'favoritas';
+        await abrirExtrato(page).catch(() => {});
+        sw = await descobrirContas(page);
+        if (sw) contas = sw.contas;
+      }
+      if (!contas.length) {
+        await page.screenshot({ path: path.join(PASTA, `contas_nao_achei_${hoje()}.png`), fullPage: true });
+        throw new Error('Nao achei a lista de contas. Salvei um print em '
+          + 'extratos\\contas_nao_achei_...png — me mande esse print para eu acertar o seletor.');
+      }
+      console.log(`Contas encontradas (${contas.length}) [${modo === 'todas' ? 'lista completa' : 'so favoritas'}]:`);
+      contas.forEach(c => console.log(`  - ${c.label}`));
+
+      if (filtros.length) {
+        const full = c => String(c.conta || c.label || '').replace(/\D/g, '');   // 639234 (com digito)
+        const base = c => String(c.conta || c.label || '').split('-')[0].replace(/\D/g, ''); // 63923
+        /* casa EXATO: pelo numero completo (com digito) OU, se voce passou so o
+           numero sem digito, pela base — nunca "contém", pra nao pegar conta parecida */
+        contas = contas.filter(c => filtros.some(f => f === full(c) || f === base(c)));
+        if (!contas.length) {
+          console.log(`Nenhuma das contas pedidas (${filtros.join(', ')}) esta neste login${modo === 'todas' ? '' : ' (so favoritas)'}.`);
+        } else {
+          console.log(`Filtrando para ${contas.length} conta(s): ${contas.map(c => c.label).join(', ')}`);
         }
       }
+      console.log('');
+
+      for (const conta of contas) {
+        const tc = Date.now();
+        let feito = false;
+        for (let tent = 1; tent <= 2 && !feito; tent++) {
+          try {
+            if (page.isClosed()) page = await ctx.newPage();
+            console.log(`Conta ${conta.label} — selecionando...`);
+            if (modo === 'todas') await selecionarContaModal(page, conta);
+            else await selecionarConta(page, sw, conta);
+            /* trocar de conta volta para a Pagina Inicial: reabre o Extrato dela */
+            await espera(1500);
+            await abrirExtrato(page);
+            await ajustarPeriodo(page, periodo);
+            /* Pesquisar/Consultar e opcional: em algumas telas o extrato ja aparece */
+            try { await clicar(page, [/pesquisar/i, /consultar/i, /buscar/i, /filtrar/i, /aplicar/i, /visualizar/i], { timeout: 6000 }); }
+            catch { /* extrato ja carregado */ }
+            await espera(3000);
+            const nome = await baixarPlanilha(page, conta);
+            console.log(`  ok: ${nome} (${dur(Date.now() - tc)})`);
+            ok.push(conta.label); feito = true;
+          } catch (e) {
+            /* o Chrome caiu (banco fechou na hora da planilha): reabre, re-loga e
+               RETENTA esta mesma conta uma vez. A lista de contas ja esta na memoria
+               e a selecao e por URL, entao a proxima conta continua normal. */
+            if (morreu(e) && tent < 2) {
+              console.log(`  o navegador fechou em ${conta.label} — reabrindo e tentando de novo...`);
+              try { await ctx.close(); } catch { /* */ }
+              try { ({ c: ctx, p: page } = await novoNavegador()); }
+              catch (e2) { console.error(`  nao consegui reabrir: ${e2.message.split('\n')[0]}`); falhou.push(conta.label); feito = true; }
+              continue;
+            }
+            console.error(`  FALHOU ${conta.label}: ${e.message.split('\n')[0]}`);
+            try { await page.screenshot({ path: path.join(PASTA, `erro_${limpo(conta.label)}_${hoje()}.png`), fullPage: true }); } catch { /* */ }
+            /* se caiu na 2a tentativa, reabre pra proxima conta nao cascatear */
+            if (morreu(e)) { try { await ctx.close(); } catch { /* */ } try { ({ c: ctx, p: page } = await novoNavegador()); } catch { /* */ } }
+            falhou.push(conta.label); feito = true;
+          }
+        }
+      }
+    } catch (e) {
+      try {
+        await page.screenshot({ path: path.join(PASTA, `erro_${hoje()}.png`), fullPage: true });
+        console.log('(salvei um print do erro em extratos\\erro_...png)');
+      } catch { /* sem print */ }
+      console.error(`\nLogin ${acesso.cnpj} parou: ${e.message.split('\n')[0]}\n`);
+      /* se o navegador morreu, reabre (sem logar) pra o proximo login conseguir entrar */
+      if (morreu(e)) { try { await ctx.close(); } catch { /* */ } try { ({ c: ctx, p: page } = await abrirNavegador()); } catch { /* */ } }
     }
-    try { await ctx.close(); } catch { /* */ }
-  } catch (e) {
-    try {
-      await page.screenshot({ path: path.join(PASTA, `erro_${hoje()}.png`), fullPage: true });
-      console.log('(salvei um print do erro em extratos\\erro_...png)');
-    } catch { /* sem print */ }
-    await ctx.close();
-    console.error('\nParou:', e.message, '\n');
   }
+  try { await ctx.close(); } catch { /* */ }
 
   console.log('\n=== Resumo ===');
   console.log(`Baixadas: ${ok.length}${ok.length ? ' (' + ok.join(', ') + ')' : ''}`);
