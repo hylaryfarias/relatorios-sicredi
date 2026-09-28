@@ -28,7 +28,7 @@ const PASTA = path.join(RAIZ, 'extratos');
 const PERFIL = path.join(RAIZ, 'perfil-chrome'); // perfil fixo do navegador (fica so no PC)
 const URL_BANCO = process.env.BANCO_URL
   || 'https://ibpj.sicredi.com.br/ib-view/loginpj/preauth.html';
-const VERSAO = 'extrato v27 (varios logins/CNPJs no mesmo banco.json)';
+const VERSAO = 'extrato v28 (le conta unica do seletor quando nao ha "Ver Mais")';
 const espera = (ms) => new Promise(r => setTimeout(r, ms));
 const hoje = () => new Date().toLocaleDateString('sv-SE');
 /* duracao amigavel: "42s" ou "3m 07s" */
@@ -386,6 +386,31 @@ async function lerTabelaContas(page) {
     const prox = page.getByText(new RegExp(`^\\s*${pag + 1}\\s*$`)).last();
     if (!(await prox.isVisible({ timeout: 1000 }).catch(() => false))) break;
     await prox.click().catch(() => {});
+  }
+
+  /* Fallback para acessos com POUCAS contas (5 ou menos): o Sicredi nao mostra o
+     "Ver Mais" e a tabela nao traz os links "selconta". A(s) conta(s) ficam no
+     <select id=opcoesCombo>, com o ID da conta no value da <option> — que e o
+     mesmo ID usado em /ib-view/selconta/<ID>.html. Le dali. */
+  if (!contas.length) {
+    const opts = page.locator('#opcoesCombo option, select option');
+    const m = await opts.count().catch(() => 0);
+    for (let j = 0; j < m; j++) {
+      const o = opts.nth(j);
+      const texto = ((await o.textContent().catch(() => '')) || '').replace(/\s+/g, ' ').trim();
+      if (!texto || /ver mais/i.test(texto)) continue;
+      const mc = texto.match(/(\d{4,6}-\d)/);
+      if (!mc) continue; // so linhas que tem cara de conta
+      const conta = mc[1];
+      const val = ((await o.getAttribute('value').catch(() => '')) || '').trim();
+      const id = /^\d+$/.test(val) ? val : null;
+      /* razao: tira "<coop> <conta> - " da frente ("0718 66274-4 - GAMEL..." -> "GAMEL...") */
+      const razao = texto.replace(/^\s*\d+\s+\d{4,6}-\d\s*[-–]?\s*/, '').trim() || texto;
+      const chave = id || (conta + '|' + razao);
+      if (vistos.has(chave)) continue;
+      vistos.add(chave);
+      contas.push({ conta, razao, id, pagina: 1, label: conta ? `${conta} - ${razao}` : razao });
+    }
   }
   return contas;
 }
