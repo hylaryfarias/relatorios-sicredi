@@ -55,7 +55,7 @@ function carregarContas() {
     + 'No GitHub, cadastre o segredo SICREDI_CONTAS.');
 }
 
-const VERSAO = 'v10 (2 antecipacoes + 1 vendas)';
+const VERSAO = 'v11 (--so-vendas e periodo por mes/datas: ex. agosto inteiro)';
 const espera = (ms) => new Promise(r => setTimeout(r, ms));
 
 /* Digita LETRA POR LETRA e ainda reforca com os eventos nativos que os portais
@@ -220,28 +220,62 @@ async function baixar(page, conta, { titulo, etapas, arquivoBase }) {
   return destino;
 }
 
+/* Define o periodo "Outro periodo": preenche Data Inicial e Data Final e clica
+   Aplicar. As datas sao <input type=date> (icone de calendario nativo), que o
+   Playwright preenche em formato ISO (AAAA-MM-DD); se forem texto, usa DD/MM/AAAA. */
+async function preencherData(campo, iso, br) {
+  await campo.waitFor({ state: 'visible', timeout: 8000 });
+  const tipo = (await campo.getAttribute('type').catch(() => '') || '').toLowerCase();
+  if (tipo === 'date' && iso) { await campo.fill(iso); }
+  else { await campo.click(); await campo.fill(''); await campo.pressSequentially(br, { delay: 60 }); }
+  await campo.evaluate(el => {
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+  }).catch(() => {});
+}
+async function definirPeriodo(page, opt) {
+  await clicar(page, [/outro per[ií]odo/i], { timeout: 10000 });
+  await espera(1200);
+  let ini = page.getByLabel(/data inicial/i).first();
+  let fim = page.getByLabel(/data final/i).first();
+  if (!(await ini.isVisible({ timeout: 1500 }).catch(() => false))) {
+    const datas = page.locator('input[type="date"]');
+    if (await datas.count().catch(() => 0) >= 2) { ini = datas.nth(0); fim = datas.nth(1); }
+  }
+  await preencherData(ini, opt.deISO, opt.de);
+  await preencherData(fim, opt.ateISO, opt.ate);
+  await clicar(page, [/aplicar/i], { timeout: 8000 });
+  await espera(1800);
+}
+
 /* -------- uma loja, inteira -------- */
-async function processarConta(browser, conta) {
+async function processarConta(browser, conta, opt = {}) {
   const ctx = await browser.newContext({ acceptDownloads: true });
   const page = await ctx.newPage();
   const feitos = [];
+  const periodoCustom = !!(opt.de && opt.ate);
   try {
     await entrar(page, conta);
 
-    // VENDAS — Relatorio simplificado, ultimos 7 dias
+    // VENDAS — Relatorio simplificado. Periodo: custom (ex. agosto) ou 7 dias.
     await clicar(page, ['Vendas', /^vendas/i], { timeout: 20000 });
     await espera(1500);
     await clicar(page, [/relat[oó]rio de vendas/i], { timeout: 8000 }).catch(() => {});
     await espera(1500);
+    if (periodoCustom) await definirPeriodo(page, opt);
+    const sufixo = periodoCustom ? `_${opt.de.replace(/\//g, '')}-${opt.ate.replace(/\//g, '')}` : '';
     feitos.push(await baixar(page, conta, {
-      titulo: 'Vendas (7 dias, simplificado)',
-      arquivoBase: `vendas_${limpo(conta.nome)}`,
+      titulo: periodoCustom ? `Vendas (${opt.de} a ${opt.ate}, simplificado)` : 'Vendas (7 dias, simplificado)',
+      arquivoBase: `vendas_${limpo(conta.nome)}${sufixo}`,
       etapas: [
-        { textos: [/ltimos 7 dias/i], espera: 1500 },
+        ...(periodoCustom ? [] : [{ textos: [/ltimos 7 dias/i], espera: 1500 }]),
         { textos: [/exportar relat[oó]rio|exportar/i], espera: 1500 },
         { textos: [/relat[oó]rio simplificado/i], espera: 800 },
       ],
     }));
+
+    /* --so-vendas: para por aqui, sem os relatorios de antecipacao */
+    if (opt.soVendas) { await ctx.close(); return { conta: conta.nome, ok: true, faltouAntecip: false, arquivos: feitos }; }
 
     // ANTECIPACAO — DOIS relatorios da mesma tela: detalhado por arranjo e
     // simplificado por antecipacao. Todas as lojas tem. As vezes a pagina
@@ -304,9 +338,38 @@ async function processarConta(browser, conta) {
 /* -------- roda tudo -------- */
 async function main() {
   let contas = carregarContas();
-  /* Se passar nomes na linha de comando, roda SO essas lojas.
-     Ex.: node scripts\\baixar.js 02 isa02  -> refaz so a 02 e a isa02. */
-  const filtro = process.argv.slice(2).map(s => s.toLowerCase());
+  /* Argumentos da linha de comando:
+       --so-vendas            baixa SO o relatorio de vendas (pula antecipacao)
+       --mes 2026-08 (ou 08)  periodo = o mes inteiro (ex.: agosto)
+       --de 01/08/2026 --ate 31/08/2026   periodo por datas
+       nomes/logins soltos    roda SO essas lojas (ex.: 02 isa02)
+     Sem nada: comportamento de sempre (7 dias, vendas + 2 antecipacoes, todas). */
+  const rawArgs = process.argv.slice(2);
+  const opt = { soVendas: false, de: null, ate: null, deISO: null, ateISO: null };
+  const filtro = [];
+  for (let i = 0; i < rawArgs.length; i++) {
+    const a = rawArgs[i].toLowerCase();
+    if (a === '--so-vendas' || a === '--somente-vendas' || a === '--vendas') opt.soVendas = true;
+    else if (a === '--de') opt.de = rawArgs[++i];
+    else if (a === '--ate' || a === '--até') opt.ate = rawArgs[++i];
+    else if (a === '--mes' || a === '--mês') opt.mes = rawArgs[++i];
+    else if (a.startsWith('--')) { /* flag desconhecida: ignora */ }
+    else filtro.push(a);
+  }
+  const dd = n => String(n).padStart(2, '0');
+  if (opt.mes) {
+    const m = String(opt.mes).match(/(\d{4})[-/.](\d{1,2})/) || String(opt.mes).match(/^(\d{1,2})$/);
+    let ano, mes;
+    if (m && m.length === 3) { ano = +m[1]; mes = +m[2]; } else if (m) { ano = new Date().getFullYear(); mes = +m[1]; }
+    if (ano && mes >= 1 && mes <= 12) {
+      const ultimo = new Date(ano, mes, 0).getDate();
+      opt.de = `${dd(1)}/${dd(mes)}/${ano}`; opt.ate = `${dd(ultimo)}/${dd(mes)}/${ano}`;
+    }
+  }
+  /* versao ISO (AAAA-MM-DD) para preencher <input type=date> */
+  const paraISO = (br) => { const p = String(br).match(/(\d{2})\/(\d{2})\/(\d{4})/); return p ? `${p[3]}-${p[2]}-${p[1]}` : null; };
+  if (opt.de && opt.ate) { opt.deISO = paraISO(opt.de); opt.ateISO = paraISO(opt.ate); }
+
   if (filtro.length) {
     contas = contas.filter(c => filtro.includes(String(c.nome).toLowerCase())
                              || filtro.includes(String(c.login).toLowerCase()));
@@ -315,7 +378,9 @@ async function main() {
   fs.mkdirSync(PASTA, { recursive: true });
   console.log(`\n=== Robo Sicredi ${VERSAO} ===`);
   console.log(`Modo: ${MODO} | Lojas: ${contas.length}`
-    + (filtro.length ? ` (so: ${contas.map(c => c.nome).join(', ')})` : '') + '\n');
+    + (filtro.length ? ` (so: ${contas.map(c => c.nome).join(', ')})` : ''));
+  console.log(`Relatorios: ${opt.soVendas ? 'SO vendas' : 'vendas + 2 antecipacoes'}`
+    + ` | Periodo: ${opt.de && opt.ate ? `${opt.de} a ${opt.ate}` : 'Ultimos 7 dias'}\n`);
 
   const browser = await chromium.launch({
     headless: MODO === 'ci',
@@ -329,7 +394,7 @@ async function main() {
       continue;
     }
     console.log(`\n== ${conta.nome} ==`);
-    resultados.push(await processarConta(browser, conta));
+    resultados.push(await processarConta(browser, conta, opt));
     await espera(2500 + Math.random() * 2500); // pausa entre lojas, sem pressa
   }
   await browser.close();
