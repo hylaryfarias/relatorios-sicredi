@@ -55,7 +55,7 @@ function carregarContas() {
     + 'No GitHub, cadastre o segredo SICREDI_CONTAS.');
 }
 
-const VERSAO = 'v11.1 (periodo: pega os dois campos de data pela posicao)';
+const VERSAO = 'v11.2 (acha os 2 campos de data pelo valor + print de diagnostico)';
 const espera = (ms) => new Promise(r => setTimeout(r, ms));
 
 /* Digita LETRA POR LETRA e ainda reforca com os eventos nativos que os portais
@@ -240,23 +240,36 @@ async function preencherData(campo, iso, br) {
   }).catch(() => {});
   await espera(400);
 }
-async function definirPeriodo(page, opt) {
+/* acha os DOIS campos de data do popup (inicial e final), como elementos
+   DISTINTOS. Tenta: 1) input[type=date]; 2) inputs cujo VALOR ja tem cara de
+   data (os dois mostram "29/09/2026"); 3) por rotulo. */
+async function acharCamposData(page) {
+  const dd = page.locator('input[type="date"]');
+  if (await dd.count().catch(() => 0) >= 2) return [dd.nth(0), dd.nth(1)];
+  const all = page.locator('input');
+  const n = await all.count().catch(() => 0);
+  const idx = [];
+  for (let i = 0; i < n && idx.length < 2; i++) {
+    const v = await all.nth(i).inputValue().catch(() => '');
+    if (/\d{1,2}\/\d{1,2}\/\d{4}/.test(v)) idx.push(i);
+  }
+  if (idx.length >= 2) return [all.nth(idx[0]), all.nth(idx[1])];
+  return [page.getByLabel(/data inicial/i).first(), page.getByLabel(/data final/i).first()];
+}
+async function definirPeriodo(page, conta, opt) {
   await clicar(page, [/outro per[ií]odo/i], { timeout: 10000 });
   await espera(1500);
-  /* Pega os DOIS campos de data pela POSICAO (1o = inicial, 2o = final). Isso
-     garante campos DIFERENTES — antes, procurar por rotulo caia no mesmo input e
-     as duas datas iam pro campo inicial. */
-  let ini, fim;
-  const datas = page.locator('input[type="date"]');
-  if (await datas.count().catch(() => 0) >= 2) {
-    ini = datas.nth(0); fim = datas.nth(1);
-  } else {
-    /* sem type=date: usa os rotulos, mas conferindo que sao elementos distintos */
-    ini = page.getByLabel(/data inicial/i).first();
-    fim = page.getByLabel(/data final/i).first();
-  }
+  const [ini, fim] = await acharCamposData(page);
   await preencherData(ini, opt.deISO, opt.de);
   await preencherData(fim, opt.ateISO, opt.ate);
+  /* print de diagnostico ANTES de aplicar, para conferir se as duas datas
+     entraram nos campos certos */
+  try {
+    fs.mkdirSync(PASTA_ERROS, { recursive: true });
+    await page.screenshot({ path: path.join(PASTA_ERROS, `periodo_${limpo(conta.nome)}_${hoje()}.png`), fullPage: true });
+    const vi = await ini.inputValue().catch(() => '?'); const vf = await fim.inputValue().catch(() => '?');
+    console.log(`  ${conta.nome}: periodo preenchido -> inicial="${vi}" final="${vf}"`);
+  } catch { /* */ }
   await clicar(page, [/aplicar/i], { timeout: 8000 });
   await espera(2000);
 }
@@ -275,7 +288,7 @@ async function processarConta(browser, conta, opt = {}) {
     await espera(1500);
     await clicar(page, [/relat[oó]rio de vendas/i], { timeout: 8000 }).catch(() => {});
     await espera(1500);
-    if (periodoCustom) await definirPeriodo(page, opt);
+    if (periodoCustom) await definirPeriodo(page, conta, opt);
     const sufixo = periodoCustom ? `_${opt.de.replace(/\//g, '')}-${opt.ate.replace(/\//g, '')}` : '';
     feitos.push(await baixar(page, conta, {
       titulo: periodoCustom ? `Vendas (${opt.de} a ${opt.ate}, simplificado)` : 'Vendas (7 dias, simplificado)',
