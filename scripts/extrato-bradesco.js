@@ -32,7 +32,7 @@ const PERFIL = path.join(RAIZ, 'perfil-bradesco');
 const URL_BANCO = process.env.BRADESCO_URL
   || 'https://www.ne12.bradesconetempresa.b.br/ibpjlogin/login.jsf';
 const PERIODO = process.env.BRADESCO_PERIODO || '5'; // 2, 5, 30, 60 ou 90 dias
-const VERSAO = 'bradesco v3.0 (opcao de usar o SEU perfil do Chrome, que ja tem a extensao)';
+const VERSAO = 'bradesco v3.1 (modo setup: instala extensao no perfil do robo, sem fechar seu Chrome)';
 const espera = (ms) => new Promise(r => setTimeout(r, ms));
 const hoje = () => new Date().toLocaleDateString('sv-SE');
 const dur = (ms) => { const s = Math.round(ms / 1000); return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, '0')}s`; };
@@ -302,7 +302,11 @@ async function main() {
      dispositivo confiavel. Ligue no banco-bradesco.json com "usarMeuChrome": true
      (e, se seu perfil nao for o "Default", "chromeProfile": "Profile 1"). Tem que
      FECHAR o Chrome normal antes de rodar (todas as janelas), senao da conflito. */
-  const usarMeuChrome = !!b.usarMeuChrome || process.env.BRADESCO_MEU_CHROME === '1';
+  const argv = process.argv.slice(2).map(s => s.trim()).filter(Boolean);
+  const setup = argv.some(a => /^setup$/i.test(a));
+  /* usarMeuChrome exige fechar o Chrome normal — nao serve pro dia a dia; o
+     caminho e o MODO SETUP (abaixo), que instala a extensao no perfil do robo. */
+  const usarMeuChrome = !setup && (!!b.usarMeuChrome || process.env.BRADESCO_MEU_CHROME === '1');
   const extraArgs = [];
   let userDataDir = PERFIL;
   if (usarMeuChrome) {
@@ -332,6 +336,27 @@ async function main() {
   const page = ctx.pages()[0] || await ctx.newPage();
   const ok = [], falhou = [];
 
+  /* MODO SETUP: abre a janela do robo na tela do Bradesco e espera VOCE fazer,
+     manualmente, uma unica vez: instalar a extensao de seguranca e logar. Isso
+     salva a extensao + dispositivo confiavel no perfil do robo. Seu Chrome normal
+     pode ficar aberto do lado — sao janelas/perfis diferentes, sem conflito.
+     Depois disso, rode SEM "setup" e ele baixa sozinho. */
+  if (setup) {
+    console.log('=== MODO CONFIGURACAO (uma vez so) ===');
+    console.log('Abri a janela do ROBO na tela do Bradesco. Seu Chrome normal pode ficar aberto.');
+    console.log('NESTA janela do robo, faca:');
+    console.log('  1) Se pedir o componente/extensao de seguranca, instale (Baixar componente e siga,');
+    console.log('     ou adicione a extensao do Bradesco se abrir a loja do Chrome).');
+    console.log('  2) Faca login (usuario, senha, "nao sou um robo").');
+    console.log('  3) Quando ENTRAR na conta (aparecer a Pagina Inicial), FECHE esta janela do robo.');
+    console.log('Aguardando voce terminar (ate 30 min)...\n');
+    await page.goto(URL_BANCO, { waitUntil: 'domcontentloaded', timeout: 60000 }).catch(() => {});
+    await page.waitForEvent('close', { timeout: 30 * 60 * 1000 }).catch(() => {});
+    console.log('\nConfiguracao encerrada. Agora rode:  node scripts\\extrato-bradesco.js adrimafe');
+    try { await ctx.close(); } catch { /* */ }
+    return;
+  }
+
   try {
     await fazerLogin(page, b);
     await dispensarNuvem(page); // logo apos entrar o Bradesco poe a "nuvem"
@@ -344,8 +369,8 @@ async function main() {
     console.log(`Empresas encontradas (${empresas.length}):`);
     empresas.forEach(e => console.log(`  - ${e.nome} (${e.cnpj})`));
 
-    /* filtro opcional pela linha de comando (parte do nome ou CNPJ) */
-    const filtros = process.argv.slice(2).map(s => s.trim().toLowerCase()).filter(Boolean);
+    /* filtro opcional pela linha de comando (parte do nome ou CNPJ); ignora "setup" */
+    const filtros = argv.map(s => s.toLowerCase()).filter(s => s && s !== 'setup');
     if (filtros.length) {
       const dig = s => String(s).replace(/\D/g, '');
       empresas = empresas.filter(e => filtros.some(f =>
