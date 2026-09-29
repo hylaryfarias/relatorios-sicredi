@@ -55,7 +55,7 @@ function carregarContas() {
     + 'No GitHub, cadastre o segredo SICREDI_CONTAS.');
 }
 
-const VERSAO = 'v11 (--so-vendas e periodo por mes/datas: ex. agosto inteiro)';
+const VERSAO = 'v11.1 (periodo: pega os dois campos de data pela posicao)';
 const espera = (ms) => new Promise(r => setTimeout(r, ms));
 
 /* Digita LETRA POR LETRA e ainda reforca com os eventos nativos que os portais
@@ -226,26 +226,39 @@ async function baixar(page, conta, { titulo, etapas, arquivoBase }) {
 async function preencherData(campo, iso, br) {
   await campo.waitFor({ state: 'visible', timeout: 8000 });
   const tipo = (await campo.getAttribute('type').catch(() => '') || '').toLowerCase();
-  if (tipo === 'date' && iso) { await campo.fill(iso); }
-  else { await campo.click(); await campo.fill(''); await campo.pressSequentially(br, { delay: 60 }); }
+  if (tipo === 'date' && iso) {
+    await campo.fill(iso); // input type=date: seta direto em ISO, sem digitar
+  } else {
+    await campo.click();
+    await campo.fill('');
+    await campo.pressSequentially(br, { delay: 60 });
+  }
   await campo.evaluate(el => {
     el.dispatchEvent(new Event('input', { bubbles: true }));
     el.dispatchEvent(new Event('change', { bubbles: true }));
+    el.dispatchEvent(new Event('blur', { bubbles: true }));
   }).catch(() => {});
+  await espera(400);
 }
 async function definirPeriodo(page, opt) {
   await clicar(page, [/outro per[ií]odo/i], { timeout: 10000 });
-  await espera(1200);
-  let ini = page.getByLabel(/data inicial/i).first();
-  let fim = page.getByLabel(/data final/i).first();
-  if (!(await ini.isVisible({ timeout: 1500 }).catch(() => false))) {
-    const datas = page.locator('input[type="date"]');
-    if (await datas.count().catch(() => 0) >= 2) { ini = datas.nth(0); fim = datas.nth(1); }
+  await espera(1500);
+  /* Pega os DOIS campos de data pela POSICAO (1o = inicial, 2o = final). Isso
+     garante campos DIFERENTES — antes, procurar por rotulo caia no mesmo input e
+     as duas datas iam pro campo inicial. */
+  let ini, fim;
+  const datas = page.locator('input[type="date"]');
+  if (await datas.count().catch(() => 0) >= 2) {
+    ini = datas.nth(0); fim = datas.nth(1);
+  } else {
+    /* sem type=date: usa os rotulos, mas conferindo que sao elementos distintos */
+    ini = page.getByLabel(/data inicial/i).first();
+    fim = page.getByLabel(/data final/i).first();
   }
   await preencherData(ini, opt.deISO, opt.de);
   await preencherData(fim, opt.ateISO, opt.ate);
   await clicar(page, [/aplicar/i], { timeout: 8000 });
-  await espera(1800);
+  await espera(2000);
 }
 
 /* -------- uma loja, inteira -------- */
