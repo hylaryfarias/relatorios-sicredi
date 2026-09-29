@@ -32,7 +32,7 @@ const PERFIL = path.join(RAIZ, 'perfil-bradesco');
 const URL_BANCO = process.env.BRADESCO_URL
   || 'https://www.ne12.bradesconetempresa.b.br/ibpjlogin/login.jsf';
 const PERIODO = process.env.BRADESCO_PERIODO || '5'; // 2, 5, 30, 60 ou 90 dias
-const VERSAO = 'bradesco v2.9 (tudo frame-aware: extrato e salvar dentro de iframe)';
+const VERSAO = 'bradesco v3.0 (opcao de usar o SEU perfil do Chrome, que ja tem a extensao)';
 const espera = (ms) => new Promise(r => setTimeout(r, ms));
 const hoje = () => new Date().toLocaleDateString('sv-SE');
 const dur = (ms) => { const s = Math.round(ms / 1000); return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, '0')}s`; };
@@ -297,15 +297,34 @@ async function main() {
      - NAO uso --disable-blink-features (dispara o banner); em vez disso, escondo
        o navigator.webdriver por script (mesmo efeito, sem banner);
      - sem --disable-http2 (era so um remendo do Sicredi). */
-  const args = ['--start-maximized'];
+  /* Opcao "usar o MEU Chrome": em vez do perfil separado do robo, usa o SEU
+     perfil normal do Chrome — que ja tem a extensao de seguranca do Bradesco e o
+     dispositivo confiavel. Ligue no banco-bradesco.json com "usarMeuChrome": true
+     (e, se seu perfil nao for o "Default", "chromeProfile": "Profile 1"). Tem que
+     FECHAR o Chrome normal antes de rodar (todas as janelas), senao da conflito. */
+  const usarMeuChrome = !!b.usarMeuChrome || process.env.BRADESCO_MEU_CHROME === '1';
+  const extraArgs = [];
+  let userDataDir = PERFIL;
+  if (usarMeuChrome) {
+    userDataDir = b.chromeUserData
+      || path.join(process.env.LOCALAPPDATA || path.join(process.env.USERPROFILE || '', 'AppData', 'Local'), 'Google', 'Chrome', 'User Data');
+    extraArgs.push(`--profile-directory=${b.chromeProfile || 'Default'}`);
+    console.log(`Usando o SEU perfil do Chrome: ${userDataDir} (perfil "${b.chromeProfile || 'Default'}")`);
+    console.log('>>> FECHE o Chrome normal (todas as janelas) antes, senao vai dar conflito de perfil.\n');
+  }
+  const args = ['--start-maximized', ...extraArgs];
   const opts = {
     headless: false, slowMo: 120, acceptDownloads: true, viewport: null, args,
     chromiumSandbox: true,
     ignoreDefaultArgs: ['--enable-automation'],
   };
   let ctx;
-  try { ctx = await chromium.launchPersistentContext(PERFIL, { channel: 'chrome', ...opts }); }
-  catch { console.log('(Chrome nao encontrado — usando o navegador embutido)'); ctx = await chromium.launchPersistentContext(PERFIL, opts); }
+  try { ctx = await chromium.launchPersistentContext(userDataDir, { channel: 'chrome', ...opts }); }
+  catch (e) {
+    if (usarMeuChrome) throw new Error('Nao consegui abrir o seu perfil do Chrome. FECHE o Chrome normal '
+      + '(todas as janelas e o icone da bandeja) e rode de novo. Detalhe: ' + e.message.split('\n')[0]);
+    console.log('(Chrome nao encontrado — usando o navegador embutido)'); ctx = await chromium.launchPersistentContext(userDataDir, opts);
+  }
   /* esconde a automacao por dentro (sem flag, sem banner) */
   await ctx.addInitScript(() => {
     try { Object.defineProperty(navigator, 'webdriver', { get: () => false }); } catch { /* */ }
