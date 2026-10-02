@@ -32,7 +32,7 @@ const PERFIL = path.join(RAIZ, 'perfil-bradesco');
 const URL_BANCO = process.env.BRADESCO_URL
   || 'https://www.ne12.bradesconetempresa.b.br/ibpjlogin/login.jsf';
 const PERIODO = process.env.BRADESCO_PERIODO || '5'; // 2, 5, 30, 60 ou 90 dias
-const VERSAO = 'bradesco v3.3 (reabre o navegador e continua se o download derrubar)';
+const VERSAO = 'bradesco v3.4 (dispensa aviso Sessao encerrada ao reabrir)';
 const espera = (ms) => new Promise(r => setTimeout(r, ms));
 const hoje = () => new Date().toLocaleDateString('sv-SE');
 const dur = (ms) => { const s = Math.round(ms / 1000); return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, '0')}s`; };
@@ -101,9 +101,26 @@ async function estaLogado(page) {
   return false;
 }
 
+/* Depois de uma queda, o Bradesco mostra "Sessao encerrada. Por motivo de
+   seguranca, acesse novamente." — um aviso que trava o login. Dispensa (Cancelar
+   acesso) e recarrega a tela de login, ate 3x. */
+async function limparSessaoEncerrada(page) {
+  for (let i = 0; i < 3; i++) {
+    const tem = await page.getByText(/sess[aã]o encerrada|acesse novamente o bradesco|encerrado incorretamente/i)
+      .first().isVisible({ timeout: 1500 }).catch(() => false);
+    if (!tem) return;
+    console.log('  (aviso "Sessao encerrada" — dispensando e recarregando o login...)');
+    await clicar(page, [/cancelar acesso/i, /^\s*ok\s*$/i, /fechar/i], { timeout: 4000 }).catch(() => {});
+    await espera(1500);
+    await page.goto(URL_BANCO, { waitUntil: 'domcontentloaded', timeout: 60000 }).catch(() => {});
+    await espera(3000);
+  }
+}
+
 async function fazerLogin(page, b) {
   await page.goto(URL_BANCO, { waitUntil: 'domcontentloaded', timeout: 60000 });
   await espera(2500);
+  await limparSessaoEncerrada(page);
   if (await estaLogado(page)) { console.log('Ja estava logado (sessao do perfil).'); return; }
 
   console.log('Login: usuario e senha');
