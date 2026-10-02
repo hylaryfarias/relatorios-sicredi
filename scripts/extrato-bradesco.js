@@ -32,7 +32,7 @@ const PERFIL = path.join(RAIZ, 'perfil-bradesco');
 const URL_BANCO = process.env.BRADESCO_URL
   || 'https://www.ne12.bradesconetempresa.b.br/ibpjlogin/login.jsf';
 const PERIODO = process.env.BRADESCO_PERIODO || '5'; // 2, 5, 30, 60 ou 90 dias
-const VERSAO = 'bradesco v3.5 (fecha caixinha Salvar; limita reaberturas; lista pular)';
+const VERSAO = 'bradesco v3.6 (nao mexe na tela logo apos baixar; limpa no inicio da proxima)';
 const espera = (ms) => new Promise(r => setTimeout(r, ms));
 const hoje = () => new Date().toLocaleDateString('sv-SE');
 const dur = (ms) => { const s = Math.round(ms / 1000); return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, '0')}s`; };
@@ -226,6 +226,13 @@ async function dispensarNuvem(page) {
 
 /* troca para a empresa `emp` pelo modal "Acessar outras empresas" */
 async function trocarEmpresa(page, emp) {
+  /* Limpeza da tela ANTES de trocar (feita aqui, longe do momento do download):
+     fecha a caixinha "Salvar como Arquivo" que ficou aberta e dispensa a nuvem.
+     Esc + um clique num texto inofensivo, com pausas. */
+  await espera(800);
+  await page.keyboard.press('Escape').catch(() => {});
+  await espera(600);
+  await dispensarNuvem(page).catch(() => {});
   /* garante a caixinha de empresas aberta. Na 1a empresa ela ja vem aberta do
      lerEmpresas; nas seguintes, reabre. n>=2 linhas com CNPJ = caixinha aberta. */
   let alvo = await frameComEmpresas(page);
@@ -296,13 +303,11 @@ async function baixarXLS(page, emp) {
     const tmp = await download.path().catch(() => null);
     if (tmp) fs.copyFileSync(tmp, dest); else throw e;
   }
-  /* FECHA a caixinha "Salvar como Arquivo" — se ela fica aberta, a proxima
-     empresa nao acha "Acessar outras empresas" e o navegador acaba caindo. */
-  await page.keyboard.press('Escape').catch(() => {});
-  await clicar(page, [/^\s*fechar\s*$/i], { timeout: 2500 }).catch(() => {});
-  await page.keyboard.press('Escape').catch(() => {});
-  await espera(1000);
-  await dispensarNuvem(page).catch(() => {});
+  /* NAO mexe na tela logo apos o download — qualquer clique/tecla aqui parece
+     irritar o Topaz e derrubar o navegador. So deixa o download assentar; a
+     limpeza da tela (fechar a caixinha "Salvar") e feita no inicio da proxima
+     empresa, ja com distancia do momento do download. */
+  await espera(2000);
   return path.basename(dest);
 }
 
