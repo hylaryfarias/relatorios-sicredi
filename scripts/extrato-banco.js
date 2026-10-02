@@ -28,7 +28,7 @@ const PASTA = path.join(RAIZ, 'extratos');
 const PERFIL = path.join(RAIZ, 'perfil-chrome'); // perfil fixo do navegador (fica so no PC)
 const URL_BANCO = process.env.BANCO_URL
   || 'https://ibpj.sicredi.com.br/ib-view/loginpj/preauth.html';
-const VERSAO = 'extrato v30 (espera a tela carregar; recarrega se o Extrato nao aparecer)';
+const VERSAO = 'extrato v31 (limite global de reaberturas; mostra o que vai baixar)';
 const espera = (ms) => new Promise(r => setTimeout(r, ms));
 const hoje = () => new Date().toLocaleDateString('sv-SE');
 /* duracao amigavel: "42s" ou "3m 07s" */
@@ -614,8 +614,13 @@ async function main() {
   let ctx, page;
   ({ c: ctx, p: page } = await novoNavegador());
   const ok = [], falhou = [];
+  /* Reabrir o navegador exige re-logar. Para NAO ficar re-logando em cascata
+     (ex.: OFX, que o Warsaw derruba de vez em quando), limitamos o total de
+     reaberturas no run inteiro; passou do limite, PARA e lista o que faltou. */
+  const MAX_REAB = 4;
+  let reaberturas = 0, pararTudo = false;
 
-  for (let ia = 0; ia < acessos.length; ia++) {
+  for (let ia = 0; ia < acessos.length && !pararTudo; ia++) {
     acesso = acessos[ia];
     const periodo = process.env.BANCO_PERIODO || acesso.periodo || 'Últimos 7 dias';
     if (acessos.length > 1) console.log(`\n===== Login ${ia + 1}/${acessos.length} — CNPJ ${acesso.cnpj} =====`);
@@ -675,8 +680,11 @@ async function main() {
         }
       }
       console.log('');
+      /* log EXPLICITO do que vai rodar — assim da pra ver na hora se o filtro pegou */
+      if (contas.length) console.log(`Vou baixar ${contas.length} conta(s): ${contas.map(c => c.label).join(', ')}\n`);
 
       for (const conta of contas) {
+        if (pararTudo) { falhou.push(conta.label); continue; }
         const tc = Date.now();
         let feito = false;
         for (let tent = 1; tent <= 2 && !feito; tent++) {
@@ -698,19 +706,22 @@ async function main() {
             ok.push(conta.label); feito = true;
           } catch (e) {
             /* o Chrome caiu (banco fechou na hora da planilha): reabre, re-loga e
-               RETENTA esta mesma conta uma vez. A lista de contas ja esta na memoria
-               e a selecao e por URL, entao a proxima conta continua normal. */
-            if (morreu(e) && tent < 2) {
-              console.log(`  o navegador fechou em ${conta.label} — reabrindo e tentando de novo...`);
+               RETENTA esta mesma conta uma vez — MAS com limite global, pra nao
+               ficar re-logando sem parar. */
+            if (morreu(e)) {
+              if (reaberturas >= MAX_REAB) {
+                console.error(`  o navegador caiu e ja reabri ${reaberturas}x — PARANDO aqui pra nao ficar re-logando em cascata. Rode de novo so as que faltaram.`);
+                falhou.push(conta.label); feito = true; pararTudo = true; continue;
+              }
+              reaberturas++;
+              console.log(`  o navegador fechou em ${conta.label} — reabrindo (${reaberturas}/${MAX_REAB})...`);
               try { await ctx.close(); } catch { /* */ }
-              try { ({ c: ctx, p: page } = await novoNavegador()); }
-              catch (e2) { console.error(`  nao consegui reabrir: ${e2.message.split('\n')[0]}`); falhou.push(conta.label); feito = true; }
+              try { ({ c: ctx, p: page } = await novoNavegador()); feito = (tent >= 2); if (tent >= 2) falhou.push(conta.label); }
+              catch (e2) { console.error(`  nao consegui reabrir: ${e2.message.split('\n')[0]}`); falhou.push(conta.label); feito = true; pararTudo = true; }
               continue;
             }
             console.error(`  FALHOU ${conta.label}: ${e.message.split('\n')[0]}`);
             try { await page.screenshot({ path: path.join(PASTA, `erro_${limpo(conta.label)}_${hoje()}.png`), fullPage: true }); } catch { /* */ }
-            /* se caiu na 2a tentativa, reabre pra proxima conta nao cascatear */
-            if (morreu(e)) { try { await ctx.close(); } catch { /* */ } try { ({ c: ctx, p: page } = await novoNavegador()); } catch { /* */ } }
             falhou.push(conta.label); feito = true;
           }
         }
