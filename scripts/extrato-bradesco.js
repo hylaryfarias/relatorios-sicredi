@@ -32,7 +32,7 @@ const PERFIL = path.join(RAIZ, 'perfil-bradesco');
 const URL_BANCO = process.env.BRADESCO_URL
   || 'https://www.ne12.bradesconetempresa.b.br/ibpjlogin/login.jsf';
 const PERIODO = process.env.BRADESCO_PERIODO || '5'; // 2, 5, 30, 60 ou 90 dias
-const VERSAO = 'bradesco v3.1 (modo setup: instala extensao no perfil do robo, sem fechar seu Chrome)';
+const VERSAO = 'bradesco v3.2 (desloga (SAIR) no fim pra nao prender a sessao)';
 const espera = (ms) => new Promise(r => setTimeout(r, ms));
 const hoje = () => new Date().toLocaleDateString('sv-SE');
 const dur = (ms) => { const s = Math.round(ms / 1000); return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, '0')}s`; };
@@ -282,6 +282,21 @@ async function baixarXLS(page, emp) {
   return path.basename(dest);
 }
 
+/* Sai da conta (botao SAIR no topo). Importante: o Bradesco nao deixa duas
+   sessoes abertas, entao sem deslogar a proxima execucao da erro de sessao
+   presa. Best-effort — se nao achar o SAIR, so avisa. */
+async function deslogar(page) {
+  try {
+    if (page.isClosed()) return;
+    await dispensarNuvem(page).catch(() => {});
+    await clicar(page, [/^\s*sair\s*$/i, /sair com seguran/i, /encerrar sess/i, /^\s*logout\s*$/i], { timeout: 8000 });
+    await espera(2500);
+    console.log('Desconectado da conta (SAIR).');
+  } catch {
+    console.log('(nao achei o SAIR para deslogar — se a proxima entrada reclamar de sessao, desconecte manual uma vez.)');
+  }
+}
+
 async function main() {
   const b = carregarBanco();
   fs.mkdirSync(PASTA, { recursive: true });
@@ -400,6 +415,7 @@ async function main() {
   } catch (e) {
     console.error('\nParou:', e.message, '\n');
   } finally {
+    await deslogar(page); // SAIR sempre, pra nao deixar a sessao presa
     console.log('\n=== Resumo ===');
     console.log(`Baixadas: ${ok.length}${ok.length ? ' (' + ok.join(', ') + ')' : ''}`);
     if (falhou.length) console.log(`Falharam: ${falhou.length} (${falhou.join(', ')}) — veja os prints erro_*.png em extratos-bradesco\\`);
