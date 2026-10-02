@@ -28,7 +28,7 @@ const PASTA = path.join(RAIZ, 'extratos');
 const PERFIL = path.join(RAIZ, 'perfil-chrome'); // perfil fixo do navegador (fica so no PC)
 const URL_BANCO = process.env.BANCO_URL
   || 'https://ibpj.sicredi.com.br/ib-view/loginpj/preauth.html';
-const VERSAO = 'extrato v29 (--ofx e periodo por datas --de/--ate/--mes)';
+const VERSAO = 'extrato v30 (espera a tela carregar; recarrega se o Extrato nao aparecer)';
 const espera = (ms) => new Promise(r => setTimeout(r, ms));
 const hoje = () => new Date().toLocaleDateString('sv-SE');
 /* duracao amigavel: "42s" ou "3m 07s" */
@@ -176,8 +176,22 @@ async function deslogar(page) {
 }
 
 async function abrirExtrato(page) {
-  await clicar(page, [/^extrato$/i, /extrato/i], { timeout: 20000 });
-  await espera(3000);
+  /* a tela da conta as vezes trava carregando (so o logo do Sicredi + a bolinha),
+     entao o menu "Extrato" nem aparece. Espera carregar; se nao achar, recarrega
+     e tenta mais uma vez antes de desistir. */
+  for (let i = 0; i < 2; i++) {
+    await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
+    try {
+      await clicar(page, [/^extrato$/i, /extrato/i], { timeout: 20000 });
+      await espera(3000);
+      return;
+    } catch (e) {
+      if (i >= 1) throw e;
+      console.log('  (a tela demorou/travou carregando — recarregando e tentando o Extrato de novo...)');
+      await page.reload({ waitUntil: 'domcontentloaded' }).catch(() => {});
+      await espera(4000);
+    }
+  }
 }
 
 async function preencherDataSic(campo, valor) {
