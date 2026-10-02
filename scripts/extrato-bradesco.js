@@ -32,7 +32,7 @@ const PERFIL = path.join(RAIZ, 'perfil-bradesco');
 const URL_BANCO = process.env.BRADESCO_URL
   || 'https://www.ne12.bradesconetempresa.b.br/ibpjlogin/login.jsf';
 const PERIODO = process.env.BRADESCO_PERIODO || '5'; // 2, 5, 30, 60 ou 90 dias
-const VERSAO = 'bradesco v3.4 (dispensa aviso Sessao encerrada ao reabrir)';
+const VERSAO = 'bradesco v3.5 (fecha caixinha Salvar; limita reaberturas; lista pular)';
 const espera = (ms) => new Promise(r => setTimeout(r, ms));
 const hoje = () => new Date().toLocaleDateString('sv-SE');
 const dur = (ms) => { const s = Math.round(ms / 1000); return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, '0')}s`; };
@@ -296,6 +296,13 @@ async function baixarXLS(page, emp) {
     const tmp = await download.path().catch(() => null);
     if (tmp) fs.copyFileSync(tmp, dest); else throw e;
   }
+  /* FECHA a caixinha "Salvar como Arquivo" — se ela fica aberta, a proxima
+     empresa nao acha "Acessar outras empresas" e o navegador acaba caindo. */
+  await page.keyboard.press('Escape').catch(() => {});
+  await clicar(page, [/^\s*fechar\s*$/i], { timeout: 2500 }).catch(() => {});
+  await page.keyboard.press('Escape').catch(() => {});
+  await espera(1000);
+  await dispensarNuvem(page).catch(() => {});
   return path.basename(dest);
 }
 
@@ -425,9 +432,25 @@ async function main() {
         e.nome.toLowerCase().includes(f) || (dig(f) && dig(e.cnpj).includes(dig(f)))));
       console.log(`\nFiltrando para ${empresas.length}: ${empresas.map(e => e.nome).join(', ') || '(nenhuma casou)'}`);
     }
+
+    /* empresas a PULAR (lista "pular" no banco-bradesco.json: nomes ou CNPJs) */
+    const pular = (Array.isArray(b.pular) ? b.pular : []).map(s => String(s).toLowerCase());
+    if (pular.length) {
+      const dig = s => String(s).replace(/\D/g, '');
+      const antes = empresas.length;
+      empresas = empresas.filter(e => !pular.some(p =>
+        e.nome.toLowerCase().includes(p) || (dig(p) && dig(e.cnpj).includes(dig(p)))));
+      if (empresas.length < antes) console.log(`Pulando ${antes - empresas.length} empresa(s) da lista "pular": ${pular.join(', ')}`);
+    }
     console.log('');
 
+    /* Reabrir o navegador exige re-logar, e re-logar demais pode BLOQUEAR o
+       acesso. Por isso limitamos a reabertura no run inteiro; passou do limite,
+       paramos e avisamos o que faltou (voce roda o resto depois). */
+    const MAX_REABERTURAS = 2;
+    let reaberturas = 0, pararTudo = false;
     for (const emp of empresas) {
+      if (pararTudo) { falhou.push(emp.nome); continue; }
       const tc = Date.now();
       let feito = false;
       for (let tent = 1; tent <= 2 && !feito; tent++) {
@@ -441,20 +464,22 @@ async function main() {
           ok.push(emp.nome); feito = true;
         } catch (e) {
           const msg = e.message.split('\n')[0];
-          /* se o navegador CAIU (o download as vezes derruba), reabre e retenta
-             esta mesma empresa uma vez; a lista ja esta na memoria. */
-          if (morreu(e) && tent < 2) {
-            console.log(`  ${emp.nome}: o navegador caiu (${msg}) — reabrindo e tentando de novo...`);
-            try { await reabrir(); }
-            catch (e2) { console.error(`  nao consegui reabrir: ${e2.message.split('\n')[0]}`); falhou.push(emp.nome); feito = true; }
+          if (morreu(e)) {
+            if (reaberturas >= MAX_REABERTURAS) {
+              console.error(`  o navegador caiu de novo e ja reabri ${reaberturas}x — PARANDO aqui para nao arriscar bloquear seu acesso.`);
+              falhou.push(emp.nome); feito = true; pararTudo = true; continue;
+            }
+            reaberturas++;
+            console.log(`  ${emp.nome}: o navegador caiu — reabrindo (${reaberturas}/${MAX_REABERTURAS})...`);
+            try { await reabrir(); feito = (tent >= 2); if (tent >= 2) falhou.push(emp.nome); }
+            catch (e2) { console.error(`  nao consegui reabrir: ${e2.message.split('\n')[0]}`); falhou.push(emp.nome); feito = true; pararTudo = true; }
             continue;
           }
+          /* falha "normal" (nao foi queda): marca e segue, limpando a tela */
           console.error(`  FALHOU ${emp.nome}: ${msg}`);
           try { await page.screenshot({ path: path.join(PASTA, `erro_${limpo(emp.nome)}_${hoje()}.png`), fullPage: true }); } catch { /* */ }
           falhou.push(emp.nome); feito = true;
-          /* se caiu, reabre pra proxima empresa nao cascatear; senao, so limpa a tela */
-          if (morreu(e)) { try { await reabrir(); } catch { /* */ } }
-          else await dispensarNuvem(page).catch(() => {});
+          await dispensarNuvem(page).catch(() => {});
         }
       }
     }
