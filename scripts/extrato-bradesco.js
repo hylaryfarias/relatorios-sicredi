@@ -32,7 +32,7 @@ const PERFIL = path.join(RAIZ, 'perfil-bradesco');
 const URL_BANCO = process.env.BRADESCO_URL
   || 'https://www.ne12.bradesconetempresa.b.br/ibpjlogin/login.jsf';
 const PERIODO = process.env.BRADESCO_PERIODO || '5'; // 2, 5, 30, 60 ou 90 dias
-const VERSAO = 'bradesco v3.2 (desloga (SAIR) no fim pra nao prender a sessao)';
+const VERSAO = 'bradesco v3.3 (reabre o navegador e continua se o download derrubar)';
 const espera = (ms) => new Promise(r => setTimeout(r, ms));
 const hoje = () => new Date().toLocaleDateString('sv-SE');
 const dur = (ms) => { const s = Math.round(ms / 1000); return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, '0')}s`; };
@@ -337,18 +337,34 @@ async function main() {
     chromiumSandbox: true,
     ignoreDefaultArgs: ['--enable-automation'],
   };
-  let ctx;
-  try { ctx = await chromium.launchPersistentContext(userDataDir, { channel: 'chrome', ...opts }); }
-  catch (e) {
-    if (usarMeuChrome) throw new Error('Nao consegui abrir o seu perfil do Chrome. FECHE o Chrome normal '
-      + '(todas as janelas e o icone da bandeja) e rode de novo. Detalhe: ' + e.message.split('\n')[0]);
-    console.log('(Chrome nao encontrado — usando o navegador embutido)'); ctx = await chromium.launchPersistentContext(userDataDir, opts);
-  }
-  /* esconde a automacao por dentro (sem flag, sem banner) */
-  await ctx.addInitScript(() => {
-    try { Object.defineProperty(navigator, 'webdriver', { get: () => false }); } catch { /* */ }
-  });
-  const page = ctx.pages()[0] || await ctx.newPage();
+  /* abre o navegador (perfil fixo do robo, com a extensao de seguranca ja
+     instalada no setup). Reutilizavel para REABRIR se o download derrubar o
+     navegador no meio. */
+  const abrir = async () => {
+    let c;
+    try { c = await chromium.launchPersistentContext(userDataDir, { channel: 'chrome', ...opts }); }
+    catch (e) {
+      if (usarMeuChrome) throw new Error('Nao consegui abrir o seu perfil do Chrome. FECHE o Chrome normal '
+        + '(todas as janelas e o icone da bandeja) e rode de novo. Detalhe: ' + e.message.split('\n')[0]);
+      console.log('(Chrome nao encontrado — usando o navegador embutido)'); c = await chromium.launchPersistentContext(userDataDir, opts);
+    }
+    /* esconde a automacao por dentro (sem flag, sem banner) */
+    await c.addInitScript(() => {
+      try { Object.defineProperty(navigator, 'webdriver', { get: () => false }); } catch { /* */ }
+    });
+    const p = c.pages()[0] || await c.newPage();
+    return { c, p };
+  };
+  const morreu = (e) => /closed|crash|Target|Session closed|context or browser|has been closed/i.test(String((e && e.message) || e));
+  let ctx, page;
+  ({ c: ctx, p: page } = await abrir());
+  /* reabre o navegador e re-loga. Como a sessao fica salva no perfil, o
+     fazerLogin costuma so detectar que ja esta logado e seguir (sem reCAPTCHA). */
+  const reabrir = async () => {
+    try { await ctx.close(); } catch { /* */ }
+    ({ c: ctx, p: page } = await abrir());
+    await fazerLogin(page, b);
+  };
   const ok = [], falhou = [];
 
   /* MODO SETUP: abre a janela do robo na tela do Bradesco e espera VOCE fazer,
@@ -396,20 +412,33 @@ async function main() {
 
     for (const emp of empresas) {
       const tc = Date.now();
-      try {
-        console.log(`Empresa ${emp.nome} — trocando...`);
-        await trocarEmpresa(page, emp);
-        await abrirExtrato(page);
-        const nome = await baixarXLS(page, emp);
-        console.log(`  ok: ${nome} (${dur(Date.now() - tc)})`);
-        ok.push(emp.nome);
-      } catch (e) {
-        console.error(`  FALHOU ${emp.nome}: ${e.message.split('\n')[0]}`);
-        await page.screenshot({ path: path.join(PASTA, `erro_${limpo(emp.nome)}_${hoje()}.png`), fullPage: true }).catch(() => {});
-        falhou.push(emp.nome);
-        /* tenta voltar a um estado limpo pro proximo: dispensa overlay e segue.
-           O link "Acessar outras empresas" fica sempre no menu lateral. */
-        await dispensarNuvem(page).catch(() => {});
+      let feito = false;
+      for (let tent = 1; tent <= 2 && !feito; tent++) {
+        try {
+          if (page.isClosed()) page = await ctx.newPage();
+          console.log(`Empresa ${emp.nome} — trocando...${tent > 1 ? ' (de novo)' : ''}`);
+          await trocarEmpresa(page, emp);
+          await abrirExtrato(page);
+          const nome = await baixarXLS(page, emp);
+          console.log(`  ok: ${nome} (${dur(Date.now() - tc)})`);
+          ok.push(emp.nome); feito = true;
+        } catch (e) {
+          const msg = e.message.split('\n')[0];
+          /* se o navegador CAIU (o download as vezes derruba), reabre e retenta
+             esta mesma empresa uma vez; a lista ja esta na memoria. */
+          if (morreu(e) && tent < 2) {
+            console.log(`  ${emp.nome}: o navegador caiu (${msg}) — reabrindo e tentando de novo...`);
+            try { await reabrir(); }
+            catch (e2) { console.error(`  nao consegui reabrir: ${e2.message.split('\n')[0]}`); falhou.push(emp.nome); feito = true; }
+            continue;
+          }
+          console.error(`  FALHOU ${emp.nome}: ${msg}`);
+          try { await page.screenshot({ path: path.join(PASTA, `erro_${limpo(emp.nome)}_${hoje()}.png`), fullPage: true }); } catch { /* */ }
+          falhou.push(emp.nome); feito = true;
+          /* se caiu, reabre pra proxima empresa nao cascatear; senao, so limpa a tela */
+          if (morreu(e)) { try { await reabrir(); } catch { /* */ } }
+          else await dispensarNuvem(page).catch(() => {});
+        }
       }
     }
   } catch (e) {
