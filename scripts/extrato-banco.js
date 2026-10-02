@@ -28,7 +28,7 @@ const PASTA = path.join(RAIZ, 'extratos');
 const PERFIL = path.join(RAIZ, 'perfil-chrome'); // perfil fixo do navegador (fica so no PC)
 const URL_BANCO = process.env.BANCO_URL
   || 'https://ibpj.sicredi.com.br/ib-view/loginpj/preauth.html';
-const VERSAO = 'extrato v28 (le conta unica do seletor quando nao ha "Ver Mais")';
+const VERSAO = 'extrato v29 (--ofx e periodo por datas --de/--ate/--mes)';
 const espera = (ms) => new Promise(r => setTimeout(r, ms));
 const hoje = () => new Date().toLocaleDateString('sv-SE');
 /* duracao amigavel: "42s" ou "3m 07s" */
@@ -180,13 +180,56 @@ async function abrirExtrato(page) {
   await espera(3000);
 }
 
-async function ajustarPeriodo(page, periodo) {
+async function preencherDataSic(campo, valor) {
   try {
-    const sel = page.locator('select')
-      .filter({ has: page.locator('option', { hasText: new RegExp(periodo.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i') }) })
-      .first();
-    await sel.selectOption({ label: periodo });
-    await espera(600);
+    await campo.click({ timeout: 4000 });
+    await campo.fill('');
+    await campo.pressSequentially(valor, { delay: 60 });
+  } catch { await campo.fill(valor).catch(() => {}); }
+  await campo.evaluate(el => {
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+    el.dispatchEvent(new Event('blur', { bubbles: true }));
+  }).catch(() => {});
+  await espera(400);
+}
+async function ajustarPeriodo(page, periodo, de, ate) {
+  try {
+    if (de && ate) {
+      /* periodo por DATAS: escolhe uma opcao de "personalizar" no seletor (se
+         houver), preenche De/Ate (os dois campos com cara de data) e Pesquisa. */
+      const selPers = page.locator('select')
+        .filter({ has: page.locator('option', { hasText: /personaliz|outro per[ií]odo|escolher per|especif/i }) }).first();
+      if (await selPers.count().catch(() => 0)) {
+        const txt = await selPers.locator('option', { hasText: /personaliz|outro per[ií]odo|escolher|especif/i })
+          .first().textContent().catch(() => null);
+        if (txt) await selPers.selectOption({ label: txt.trim() }).catch(() => {});
+        await espera(800);
+      }
+      /* acha os dois campos com cara de data (De e Ate) e preenche */
+      const all = page.locator('input');
+      const n = await all.count().catch(() => 0);
+      const campos = [];
+      for (let i = 0; i < n && campos.length < 2; i++) {
+        const v = await all.nth(i).inputValue().catch(() => '');
+        if (/\d{2}\/\d{2}\/\d{4}/.test(v)) campos.push(all.nth(i));
+      }
+      if (campos.length >= 2) {
+        await preencherDataSic(campos[0], de);
+        await preencherDataSic(campos[1], ate);
+        console.log(`  periodo -> De="${await campos[0].inputValue().catch(() => '?')}" Ate="${await campos[1].inputValue().catch(() => '?')}"`);
+      } else {
+        console.log('  (nao achei os campos De/Ate — conferir a tela do extrato)');
+      }
+      await clicar(page, [/pesquisar/i, /consultar/i, /buscar/i], { timeout: 8000 }).catch(() => {});
+      await espera(2000);
+    } else {
+      const sel = page.locator('select')
+        .filter({ has: page.locator('option', { hasText: new RegExp(periodo.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i') }) })
+        .first();
+      await sel.selectOption({ label: periodo });
+      await espera(600);
+    }
   } catch { /* ja deve estar no periodo certo */ }
 }
 
@@ -478,14 +521,17 @@ async function selecionarContaModal(page, c) {
   await espera(2500);
 }
 
-async function baixarPlanilha(page, conta) {
-  const destino = path.join(PASTA, `extrato_${limpo(conta.label)}_${hoje()}.xls`);
+async function baixarPlanilha(page, conta, ofx) {
+  const extPref = ofx ? '.ofx' : '.xls';
+  const destino = path.join(PASTA, `extrato_${limpo(conta.label)}_${hoje()}${extPref}`);
   /* escuta o download no CONTEXTO (pega tambem se abrir em outra aba/popup) */
   const dlPromise = page.context().waitForEvent('download', { timeout: 60000 });
-  await clicar(page, [/gerar planilha/i, /planilha/i, /exportar/i], { timeout: 15000 });
+  /* OFX = botao "Gerar OFX"; padrao = "Gerar Planilha" (Excel) */
+  const botoes = ofx ? [/gerar ofx/i, /\bofx\b/i] : [/gerar planilha/i, /planilha/i, /exportar/i];
+  await clicar(page, botoes, { timeout: 15000 });
   const download = await dlPromise;
-  const ext = path.extname(download.suggestedFilename() || '') || '.xls';
-  const dest = destino.replace(/\.xls$/i, ext);
+  const ext = path.extname(download.suggestedFilename() || '') || extPref;
+  const dest = destino.replace(new RegExp(extPref.replace('.', '\\.') + '$', 'i'), ext);
   try { await download.saveAs(dest); }
   catch (e) {
     const tmp = await download.path().catch(() => null);
@@ -514,7 +560,30 @@ async function main() {
      (63923-4 e 63923-8), entao:
        - com digito casa EXATO so aquela conta:  node ...\\extrato-banco.js 63923-4
        - sem digito casa todas com aquele numero: node ...\\extrato-banco.js 63923 */
-  const filtros = process.argv.slice(2).map(s => s.replace(/\D/g, '')).filter(Boolean);
+  /* flags pontuais: --ofx (baixa OFX em vez de Excel), --de/--ate ou --mes
+     (periodo por datas). O resto dos argumentos sao numeros de conta (filtro). */
+  const rawArgs = process.argv.slice(2);
+  const OPT = { ofx: false, de: null, ate: null };
+  const contaArgs = [];
+  for (let i = 0; i < rawArgs.length; i++) {
+    const a = rawArgs[i].toLowerCase();
+    if (a === '--ofx') OPT.ofx = true;
+    else if (a === '--de') OPT.de = rawArgs[++i];
+    else if (a === '--ate' || a === '--até') OPT.ate = rawArgs[++i];
+    else if (a === '--mes' || a === '--mês') OPT.mes = rawArgs[++i];
+    else if (a.startsWith('--')) { /* flag desconhecida: ignora */ }
+    else contaArgs.push(rawArgs[i]);
+  }
+  const dd2 = n => String(n).padStart(2, '0');
+  if (OPT.mes) {
+    const m = String(OPT.mes).match(/(\d{4})[-/.](\d{1,2})/) || String(OPT.mes).match(/^(\d{1,2})$/);
+    let ano, mes;
+    if (m && m.length === 3) { ano = +m[1]; mes = +m[2]; } else if (m) { ano = new Date().getFullYear(); mes = +m[1]; }
+    if (ano && mes >= 1 && mes <= 12) { const u = new Date(ano, mes, 0).getDate(); OPT.de = `${dd2(1)}/${dd2(mes)}/${ano}`; OPT.ate = `${dd2(u)}/${dd2(mes)}/${ano}`; }
+  }
+  if (OPT.ofx) console.log('Formato: OFX');
+  if (OPT.de && OPT.ate) console.log(`Periodo (datas): ${OPT.de} a ${OPT.ate}`);
+  const filtros = contaArgs.map(s => s.replace(/\D/g, '')).filter(Boolean);
 
   /* acesso ATUAL (login de agora): novoNavegador() reloga nele ao reabrir apos
      uma queda do Chrome. So abrir o navegador (sem logar) fica em abrirNavegador. */
@@ -605,12 +674,12 @@ async function main() {
             /* trocar de conta volta para a Pagina Inicial: reabre o Extrato dela */
             await espera(1500);
             await abrirExtrato(page);
-            await ajustarPeriodo(page, periodo);
+            await ajustarPeriodo(page, periodo, OPT.de, OPT.ate);
             /* Pesquisar/Consultar e opcional: em algumas telas o extrato ja aparece */
             try { await clicar(page, [/pesquisar/i, /consultar/i, /buscar/i, /filtrar/i, /aplicar/i, /visualizar/i], { timeout: 6000 }); }
             catch { /* extrato ja carregado */ }
             await espera(3000);
-            const nome = await baixarPlanilha(page, conta);
+            const nome = await baixarPlanilha(page, conta, OPT.ofx);
             console.log(`  ok: ${nome} (${dur(Date.now() - tc)})`);
             ok.push(conta.label); feito = true;
           } catch (e) {
