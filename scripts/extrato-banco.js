@@ -25,11 +25,10 @@ import { chromium } from 'playwright';
 
 const RAIZ = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const PASTA = path.join(RAIZ, 'extratos');
-const DLDIR = path.join(RAIZ, '.dl'); // pasta de download do Chrome (controlada), p/ resgatar arquivo se o navegador cair
 const PERFIL = path.join(RAIZ, 'perfil-chrome'); // perfil fixo do navegador (fica so no PC)
 const URL_BANCO = process.env.BANCO_URL
   || 'https://ibpj.sicredi.com.br/ib-view/loginpj/preauth.html';
-const VERSAO = 'extrato v32 (resgata o arquivo do disco se o navegador cair — salva a GAMEL)';
+const VERSAO = 'extrato v33 (volta ao download que funcionava; sem downloadsPath)';
 const espera = (ms) => new Promise(r => setTimeout(r, ms));
 const hoje = () => new Date().toLocaleDateString('sv-SE');
 /* duracao amigavel: "42s" ou "3m 07s" */
@@ -536,54 +535,28 @@ async function selecionarContaModal(page, c) {
   await espera(2500);
 }
 
-/* tira uma "foto" dos arquivos em .dl (nome -> hora de modificacao) */
-function snapDL() {
-  try { return new Map(fs.readdirSync(DLDIR).map(f => [f, fs.statSync(path.join(DLDIR, f)).mtimeMs])); }
-  catch { return new Map(); }
-}
-/* acha o arquivo NOVO (ou alterado) em .dl desde a foto `antes` */
-function novoDL(antes) {
-  try {
-    const novos = fs.readdirSync(DLDIR)
-      .map(f => ({ f, t: fs.statSync(path.join(DLDIR, f)).mtimeMs, sz: fs.statSync(path.join(DLDIR, f)).size }))
-      .filter(x => x.sz > 0 && !/\.crdownload$/i.test(x.f) && (!antes.has(x.f) || antes.get(x.f) !== x.t))
-      .sort((a, b) => b.t - a.t);
-    return novos.length ? path.join(DLDIR, novos[0].f) : null;
-  } catch { return null; }
-}
-
 async function baixarPlanilha(page, conta, ofx) {
   const extPref = ofx ? '.ofx' : '.xls';
   const destino = path.join(PASTA, `extrato_${limpo(conta.label)}_${hoje()}${extPref}`);
-  const antes = snapDL();
   /* escuta o download no CONTEXTO (pega tambem se abrir em outra aba/popup) */
-  const dlPromise = page.context().waitForEvent('download', { timeout: 60000 }).catch(() => null);
+  const dlPromise = page.context().waitForEvent('download', { timeout: 60000 });
   /* OFX = botao "Gerar OFX"; padrao = "Gerar Planilha" (Excel) */
   const botoes = ofx ? [/gerar ofx/i, /\bofx\b/i] : [/gerar planilha/i, /planilha/i, /exportar/i];
   await clicar(page, botoes, { timeout: 15000 });
   const download = await dlPromise;
-  if (download) {
-    const ext = path.extname(download.suggestedFilename() || '') || extPref;
-    const dest = destino.replace(new RegExp(extPref.replace('.', '\\.') + '$', 'i'), ext);
-    try { await download.saveAs(dest); return path.basename(dest); } catch { /* navegador caiu no meio */ }
+  const ext = path.extname(download.suggestedFilename() || '') || extPref;
+  const dest = destino.replace(new RegExp(extPref.replace('.', '\\.') + '$', 'i'), ext);
+  try { await download.saveAs(dest); }
+  catch (e) {
     const tmp = await download.path().catch(() => null);
-    if (tmp) { try { fs.copyFileSync(tmp, dest); return path.basename(dest); } catch { /* */ } }
+    if (tmp) fs.copyFileSync(tmp, dest); else throw e;
   }
-  /* RESGATE: mesmo que o navegador caia na hora de salvar, o Chrome ja gravou o
-     arquivo em .dl um instante antes. Acha o mais novo e copia — e assim que a
-     GAMEL (que derruba o navegador no download) consegue ser salva. */
-  for (let i = 0; i < 15; i++) {
-    const arq = novoDL(antes);
-    if (arq) { fs.copyFileSync(arq, destino); return path.basename(destino); }
-    await espera(1000);
-  }
-  throw new Error('download nao encontrado (o navegador caiu antes de gravar o arquivo)');
+  return path.basename(dest);
 }
 
 async function main() {
   const acessos = carregarAcessos();
   fs.mkdirSync(PASTA, { recursive: true });
-  fs.mkdirSync(DLDIR, { recursive: true });
   console.log(`\n=== Robo Extrato ${VERSAO} ===`);
   if (acessos.length > 1) console.log(`Logins a processar: ${acessos.length} (${acessos.map(a => a.cnpj).join(', ')})`);
   const t0 = Date.now();
@@ -593,10 +566,7 @@ async function main() {
      do dispositivo fica salva no perfil entre execucoes, reduzindo a tela do
      ofertaWarsaw. --disable-http2 evita o ERR_HTTP2_PROTOCOL_ERROR no login. */
   const args = ['--disable-http2', '--disable-blink-features=AutomationControlled'];
-  /* downloadsPath: o Chrome grava os downloads numa pasta controlada (.dl), para
-     o robo conseguir RESGATAR o arquivo mesmo se o navegador cair na hora de
-     salvar (caso da GAMEL). saveAs continua funcionando igual para o resto. */
-  const opts = { headless: false, slowMo: 120, acceptDownloads: true, viewport: null, args, downloadsPath: DLDIR };
+  const opts = { headless: false, slowMo: 120, acceptDownloads: true, viewport: null, args };
   const morreu = (e) => /closed|crash|Target|Session closed|context or browser|has been closed/i.test(String((e && e.message) || e));
 
   /* rodar so algumas contas: passe os numeros na linha de comando (vale para
