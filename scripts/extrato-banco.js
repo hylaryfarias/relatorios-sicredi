@@ -28,7 +28,7 @@ const PASTA = path.join(RAIZ, 'extratos');
 const PERFIL = path.join(RAIZ, 'perfil-chrome'); // perfil fixo do navegador (fica so no PC)
 const URL_BANCO = process.env.BANCO_URL
   || 'https://ibpj.sicredi.com.br/ib-view/loginpj/preauth.html';
-const VERSAO = 'extrato v34 (GAMEL: seleciona pelo seletor nativo do Sicredi, nao por URL adivinhada)';
+const VERSAO = 'extrato v35 (limite por quedas SEGUIDAS: conta teimosa nao trava as outras)';
 const espera = (ms) => new Promise(r => setTimeout(r, ms));
 const hoje = () => new Date().toLocaleDateString('sv-SE');
 /* duracao amigavel: "42s" ou "3m 07s" */
@@ -631,11 +631,13 @@ async function main() {
   let ctx, page;
   ({ c: ctx, p: page } = await novoNavegador());
   const ok = [], falhou = [];
-  /* Reabrir o navegador exige re-logar. Para NAO ficar re-logando em cascata
-     (ex.: OFX, que o Warsaw derruba de vez em quando), limitamos o total de
-     reaberturas no run inteiro; passou do limite, PARA e lista o que faltou. */
-  const MAX_REAB = 4;
-  let reaberturas = 0, pararTudo = false;
+  /* Reabrir o navegador exige re-logar. Para NAO ficar re-logando numa cascata
+     sem fim (ex.: OFX, que o Warsaw derruba toda hora) MAS sem deixar uma conta
+     teimosa (a GAMEL) impedir as outras, contamos as quedas SEGUIDAS SEM baixar
+     nada: a cada download que dá certo, zera. So PARA se forem muitas quedas em
+     sequencia (cascata de verdade). */
+  const MAX_SEGUIDAS = 4;
+  let reabSeguidas = 0, pararTudo = false;
 
   for (let ia = 0; ia < acessos.length && !pararTudo; ia++) {
     acesso = acessos[ia];
@@ -720,18 +722,19 @@ async function main() {
             await espera(3000);
             const nome = await baixarPlanilha(page, conta, OPT.ofx);
             console.log(`  ok: ${nome} (${dur(Date.now() - tc)})`);
-            ok.push(conta.label); feito = true;
+            ok.push(conta.label); feito = true; reabSeguidas = 0; // baixou: zera a cascata
           } catch (e) {
             /* o Chrome caiu (banco fechou na hora da planilha): reabre, re-loga e
-               RETENTA esta mesma conta uma vez — MAS com limite global, pra nao
-               ficar re-logando sem parar. */
+               RETENTA esta conta uma vez. So PARA se forem muitas quedas SEGUIDAS
+               sem baixar nada (cascata) — uma conta teimosa (GAMEL) nao trava o
+               resto, porque o contador zera quando a proxima conta baixa. */
             if (morreu(e)) {
-              if (reaberturas >= MAX_REAB) {
-                console.error(`  o navegador caiu e ja reabri ${reaberturas}x — PARANDO aqui pra nao ficar re-logando em cascata. Rode de novo so as que faltaram.`);
+              if (reabSeguidas >= MAX_SEGUIDAS) {
+                console.error(`  ${MAX_SEGUIDAS} quedas seguidas sem baixar nada — PARANDO pra nao re-logar em cascata. Rode de novo so as que faltaram.`);
                 falhou.push(conta.label); feito = true; pararTudo = true; continue;
               }
-              reaberturas++;
-              console.log(`  o navegador fechou em ${conta.label} — reabrindo (${reaberturas}/${MAX_REAB})...`);
+              reabSeguidas++;
+              console.log(`  o navegador fechou em ${conta.label} — reabrindo (queda ${reabSeguidas}/${MAX_SEGUIDAS} seguidas)...`);
               try { await ctx.close(); } catch { /* */ }
               try { ({ c: ctx, p: page } = await novoNavegador()); feito = (tent >= 2); if (tent >= 2) falhou.push(conta.label); }
               catch (e2) { console.error(`  nao consegui reabrir: ${e2.message.split('\n')[0]}`); falhou.push(conta.label); feito = true; pararTudo = true; }
