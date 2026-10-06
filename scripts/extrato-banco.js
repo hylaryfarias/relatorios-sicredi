@@ -28,7 +28,7 @@ const PASTA = path.join(RAIZ, 'extratos');
 const PERFIL = path.join(RAIZ, 'perfil-chrome'); // perfil fixo do navegador (fica so no PC)
 const URL_BANCO = process.env.BANCO_URL
   || 'https://ibpj.sicredi.com.br/ib-view/loginpj/preauth.html';
-const VERSAO = 'extrato v33 (volta ao download que funcionava; sem downloadsPath)';
+const VERSAO = 'extrato v34 (GAMEL: seleciona pelo seletor nativo do Sicredi, nao por URL adivinhada)';
 const espera = (ms) => new Promise(r => setTimeout(r, ms));
 const hoje = () => new Date().toLocaleDateString('sv-SE');
 /* duracao amigavel: "42s" ou "3m 07s" */
@@ -466,7 +466,9 @@ async function lerTabelaContas(page) {
       const chave = id || (conta + '|' + razao);
       if (vistos.has(chave)) continue;
       vistos.add(chave);
-      contas.push({ conta, razao, id, pagina: 1, label: conta ? `${conta} - ${razao}` : razao });
+      /* comboValue: marca que esta conta veio do <select> do topo — assim a
+         selecao usa o seletor NATIVO (trocaConta), nao uma URL adivinhada. */
+      contas.push({ conta, razao, id, pagina: 1, comboValue: val || null, label: conta ? `${conta} - ${razao}` : razao });
     }
   }
   return contas;
@@ -512,6 +514,21 @@ async function filtrarPorConta(page, conta) {
 }
 
 async function selecionarContaModal(page, c) {
+  /* Conta vinda do <select> do topo (acesso de conta unica, ex.: GAMEL): usa o
+     seletor NATIVO do Sicredi (dispara o trocaConta do site), em vez de montar a
+     URL /selconta/ na mao — a URL adivinhada abre uma tela "meio torta" que
+     quebra na hora de baixar. O seletor nativo leva para a tela certa. */
+  if (c.comboValue) {
+    try {
+      const combo = page.locator('#opcoesCombo').first();
+      if (await combo.count().catch(() => 0)) {
+        await combo.selectOption(c.comboValue);
+        await espera(3000);
+        await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
+        return;
+      }
+    } catch { /* cai para o goto por ID abaixo */ }
+  }
   /* caminho principal: ir DIRETO para /ib-view/selconta/<ID>.html (o destino do
      link da conta, capturado na listagem). Nao reabre janela nem digita em
      campo nenhum — imune ao problema de digitar no campo errado. */
