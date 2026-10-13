@@ -28,7 +28,7 @@ const PASTA = path.join(RAIZ, 'extratos');
 const PERFIL = path.join(RAIZ, 'perfil-chrome'); // perfil fixo do navegador (fica so no PC)
 const URL_BANCO = process.env.BANCO_URL
   || 'https://ibpj.sicredi.com.br/ib-view/loginpj/preauth.html';
-const VERSAO = 'extrato v35 (limite por quedas SEGUIDAS: conta teimosa nao trava as outras)';
+const VERSAO = 'extrato v36 (lista pular no banco.json: exclui contas do run)';
 const espera = (ms) => new Promise(r => setTimeout(r, ms));
 const hoje = () => new Date().toLocaleDateString('sv-SE');
 /* duracao amigavel: "42s" ou "3m 07s" */
@@ -615,6 +615,12 @@ async function main() {
   if (OPT.ofx) console.log('Formato: OFX');
   if (OPT.de && OPT.ate) console.log(`Periodo (datas): ${OPT.de} a ${OPT.ate}`);
   const filtros = contaArgs.map(s => s.replace(/\D/g, '')).filter(Boolean);
+  /* contas a PULAR (lista "pular" no banco.json: nomes ou numeros de conta).
+     Ex.: "pular": ["CHETON"]  ou  "pular": ["70836-6"]. */
+  const bancoRaw = carregarBanco();
+  const pular = (!Array.isArray(bancoRaw) && Array.isArray(bancoRaw.pular) ? bancoRaw.pular : [])
+    .map(s => String(s).toLowerCase().trim()).filter(Boolean);
+  if (pular.length) console.log(`Pulando (lista "pular"): ${pular.join(', ')}`);
 
   /* acesso ATUAL (login de agora): novoNavegador() reloga nele ao reabrir apos
      uma queda do Chrome. So abrir o navegador (sem logar) fica em abrirNavegador. */
@@ -697,6 +703,16 @@ async function main() {
         } else {
           console.log(`Filtrando para ${contas.length} conta(s): ${contas.map(c => c.label).join(', ')}`);
         }
+      }
+      /* tira as contas da lista "pular" (casa por numero com/sem digito OU por
+         parte do nome — "cheton" casa "CHETON FOODS...") */
+      if (pular.length) {
+        const dig = s => String(s).replace(/\D/g, '');
+        const antes = contas.length;
+        contas = contas.filter(c => !pular.some(p =>
+          (dig(p) && (dig(p) === dig(c.conta || c.label) || dig(p) === String(c.conta || c.label).split('-')[0].replace(/\D/g, '')))
+          || (!dig(p) && String(c.label).toLowerCase().includes(p))));
+        if (contas.length < antes) console.log(`Puladas ${antes - contas.length} conta(s) da lista "pular".`);
       }
       console.log('');
       /* log EXPLICITO do que vai rodar — assim da pra ver na hora se o filtro pegou */
