@@ -55,7 +55,7 @@ function carregarContas() {
     + 'No GitHub, cadastre o segredo SICREDI_CONTAS.');
 }
 
-const VERSAO = 'v11.13 (antecipacao: varias formas de abrir + salva o HTML da area de periodo)';
+const VERSAO = 'v11.14 (antecipacao: clica no ICONE de calendario — o link que abre o tooltip de periodo)';
 const espera = (ms) => new Promise(r => setTimeout(r, ms));
 
 /* Digita LETRA POR LETRA e ainda reforca com os eventos nativos que os portais
@@ -260,14 +260,13 @@ async function acharCamposData(page) {
    icone de calendario). Clicar no TEXTO do card nao abre nada — o onclick esta
    no card (ou no botao do calendario). Aqui acho o rotulo "Período", subo ate o
    ancestral clicavel e clico nele; se nao der, clico no icone de calendario. */
-/* O popup de periodo esta aberto quando aparece o calendario flatpickr, o botao
-   "Aplicar" ou os campos "Data Inicial/Final". */
+/* O tooltip de periodo so carrega os campos e o botao "Aplicar" DEPOIS de aberto
+   — entao a presenca do "Aplicar" visivel e o sinal seguro de que abriu (os
+   campos de data ficam "visiveis" mesmo fechados, por isso nao servem de sinal). */
 async function popupPeriodoAberto(page) {
-  if (await page.locator('.flatpickr-calendar.open, [class*="flatpickr"][class*="open"]').count().catch(() => 0) >= 1) return true;
-  if (await page.locator('input[type="date"]').count().catch(() => 0) >= 1) return true;
-  for (const re of [/data inicial/i, /data final/i, /^\s*aplicar\s*$/i]) {
-    if (await page.getByText(re).first().isVisible({ timeout: 400 }).catch(() => false)) return true;
-  }
+  if (await page.getByText(/^\s*aplicar\s*$/i).first().isVisible({ timeout: 500 }).catch(() => false)) return true;
+  if (await page.locator('.flatpickr-calendar.open').count().catch(() => 0) >= 1) return true;
+  if (await page.getByText(/data inicial/i).first().isVisible({ timeout: 300 }).catch(() => false)) return true;
   return false;
 }
 /* Salva o HTML da regiao do periodo (pra eu ver a estrutura exata e acertar o
@@ -287,39 +286,28 @@ async function dumpPeriodoDOM(page) {
   } catch { /* */ }
 }
 async function abrirPeriodoAntecipacao(page) {
-  /* O seletor de periodo e um componente OutSystems/flatpickr. Tento varias
-     formas de abrir e confiro, a cada uma, se o calendario apareceu:
-     1) a API interna do flatpickr (._flatpickr.open), que ignora overlay;
-     2) clique de mouse real no botao do periodo (testid e ids), inclusive FORCADO;
-     3) clique forcado no proprio campo de data. */
-  await dumpPeriodoDOM(page);
-
-  // 1) API interna do flatpickr
-  const abriuApi = await page.evaluate(() => {
-    const cand = Array.from(document.querySelectorAll('input[id$="FilterDateInit"], .flatpickr-wrapper, [data-testid="generic-calendar-periodo-calendar"]'));
-    for (const c of cand) {
-      const fp = c._flatpickr || (c.closest && c.closest('.flatpickr-wrapper') && c.closest('.flatpickr-wrapper')._flatpickr);
-      if (fp && typeof fp.open === 'function') { fp.open(); return true; }
-    }
-    return false;
-  }).catch(() => false);
-  if (abriuApi) { await espera(900); if (await popupPeriodoAberto(page)) return true; }
-
-  // 2) e 3) cliques de mouse (normal e forcado)
+  /* Pelo HTML real: o componente e FiservCommonInput.DateRangePickerButton. O
+     texto "Últimos 7 Dias" (data-testid generic-calendar-periodo-calendar) e so
+     o ROTULO — nao abre nada. Quem abre e o ICONE DE CALENDARIO ao lado, que e um
+     <a href="#"> dentro de [data-testid="generic-calendar-icon-calendar"] (a img
+     tem data-testid "calendar-trigger-icon"). Ao clicar, abre um tooltip
+     (custom-range-picker) que SO ENTAO carrega os campos de data e o Aplicar. */
   const seletores = [
-    '[data-testid="generic-calendar-periodo-calendar"]',
-    '[id*="data_range_picker_btn"]',
-    'input[id$="FilterDateInit"]',
+    '[data-testid="generic-calendar-icon-calendar"] a[href="#"]', // o link do icone (trigger real)
+    '[data-testid="calendar-trigger-icon"]',                      // a imagem do calendario
+    '[id$="data_range_picker_btn_tooltip"] a',                    // mesmo link, por id
+    '[data-testid="generic-calendar-icon-calendar"]',             // o container do icone
   ];
   for (const sel of seletores) {
     const el = page.locator(sel).first();
     if (!(await el.count().catch(() => 0))) continue;
     for (const forca of [false, true]) {
       try { await el.click({ timeout: 3500, force: forca }); } catch { continue; }
-      await espera(900);
+      await espera(1000);
       if (await popupPeriodoAberto(page)) return true;
     }
   }
+  await dumpPeriodoDOM(page); // se nenhum abriu, guarda o HTML atual pra eu analisar
   return false;
 }
 async function definirPeriodo(page, conta, opt) {
