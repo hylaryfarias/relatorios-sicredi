@@ -55,7 +55,7 @@ function carregarContas() {
     + 'No GitHub, cadastre o segredo SICREDI_CONTAS.');
 }
 
-const VERSAO = 'v11.14 (antecipacao: clica no ICONE de calendario — o link que abre o tooltip de periodo)';
+const VERSAO = 'v11.15 (antecipacao: abre o tooltip do calendario sem alternar; depois digita igual vendas)';
 const espera = (ms) => new Promise(r => setTimeout(r, ms));
 
 /* Digita LETRA POR LETRA e ainda reforca com os eventos nativos que os portais
@@ -260,13 +260,22 @@ async function acharCamposData(page) {
    icone de calendario). Clicar no TEXTO do card nao abre nada — o onclick esta
    no card (ou no botao do calendario). Aqui acho o rotulo "Período", subo ate o
    ancestral clicavel e clico nele; se nao der, clico no icone de calendario. */
-/* O tooltip de periodo so carrega os campos e o botao "Aplicar" DEPOIS de aberto
-   — entao a presenca do "Aplicar" visivel e o sinal seguro de que abriu (os
-   campos de data ficam "visiveis" mesmo fechados, por isso nao servem de sinal). */
+/* O tooltip (osui-tooltip custom-range-picker) tem o conteudo VAZIO quando
+   fechado e so o preenche (campos + Aplicar) ao abrir. Entao "conteudo com
+   filhos" e o sinal certeiro de que abriu. */
 async function popupPeriodoAberto(page) {
-  if (await page.getByText(/^\s*aplicar\s*$/i).first().isVisible({ timeout: 500 }).catch(() => false)) return true;
-  if (await page.locator('.flatpickr-calendar.open').count().catch(() => 0) >= 1) return true;
-  if (await page.getByText(/data inicial/i).first().isVisible({ timeout: 300 }).catch(() => false)) return true;
+  const cheio = await page.locator('.custom-range-picker .osui-tooltip__content, [id$="-Content"][role="tooltip"]').first()
+    .evaluate(el => !!el && el.children.length > 0).catch(() => false);
+  if (cheio) return true;
+  if (await page.getByText(/^\s*aplicar\s*$/i).first().isVisible({ timeout: 300 }).catch(() => false)) return true;
+  return false;
+}
+async function esperaPopup(page, ms = 5000) {
+  const ate = Date.now() + ms;
+  while (Date.now() < ate) {
+    if (await popupPeriodoAberto(page)) return true;
+    await espera(350);
+  }
   return false;
 }
 /* Salva o HTML da regiao do periodo (pra eu ver a estrutura exata e acertar o
@@ -286,28 +295,41 @@ async function dumpPeriodoDOM(page) {
   } catch { /* */ }
 }
 async function abrirPeriodoAntecipacao(page) {
-  /* Pelo HTML real: o componente e FiservCommonInput.DateRangePickerButton. O
-     texto "Últimos 7 Dias" (data-testid generic-calendar-periodo-calendar) e so
-     o ROTULO — nao abre nada. Quem abre e o ICONE DE CALENDARIO ao lado, que e um
-     <a href="#"> dentro de [data-testid="generic-calendar-icon-calendar"] (a img
-     tem data-testid "calendar-trigger-icon"). Ao clicar, abre um tooltip
-     (custom-range-picker) que SO ENTAO carrega os campos de data e o Aplicar. */
-  const seletores = [
-    '[data-testid="generic-calendar-icon-calendar"] a[href="#"]', // o link do icone (trigger real)
-    '[data-testid="calendar-trigger-icon"]',                      // a imagem do calendario
-    '[id$="data_range_picker_btn_tooltip"] a',                    // mesmo link, por id
-    '[data-testid="generic-calendar-icon-calendar"]',             // o container do icone
+  /* Mesmos campos do vendas; so muda o jeito de abrir. Aqui o calendario esta
+     num tooltip (osui-tooltip custom-range-picker) que abre ao acionar o ICONE
+     de calendario (<a> em [data-testid="generic-calendar-icon-calendar"], img
+     "calendar-trigger-icon") e so entao cria os campos. O tooltip ALTERNA a cada
+     clique, entao confiro "ja abriu?" ANTES de cada acao e paro assim que abre. */
+  const acoes = [
+    // 1) eventos de mouse via JS no link do icone (o que a OutSystems escuta) —
+    //    nao depende de tamanho nem de overlay.
+    async () => page.evaluate(() => {
+      const t = document.querySelector('[data-testid="generic-calendar-icon-calendar"] a')
+             || document.querySelector('[data-testid="calendar-trigger-icon"]')
+             || document.querySelector('[data-testid="generic-calendar-icon-calendar"]');
+      if (!t) return;
+      try { t.scrollIntoView({ block: 'center' }); } catch { /* */ }
+      for (const type of ['mouseenter', 'mouseover', 'mousedown', 'mouseup', 'click']) {
+        t.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window }));
+      }
+    }),
+    // 2) clique real na imagem do calendario
+    async () => page.locator('[data-testid="calendar-trigger-icon"]').first().click({ timeout: 3000 }),
+    // 3) hover + clique forcado no link do icone
+    async () => {
+      const a = page.locator('[data-testid="generic-calendar-icon-calendar"] a').first();
+      await a.hover({ timeout: 2000 }).catch(() => {});
+      await a.click({ timeout: 3000, force: true });
+    },
+    // 4) clique forcado no container do icone
+    async () => page.locator('[data-testid="generic-calendar-icon-calendar"]').first().click({ timeout: 3000, force: true }),
   ];
-  for (const sel of seletores) {
-    const el = page.locator(sel).first();
-    if (!(await el.count().catch(() => 0))) continue;
-    for (const forca of [false, true]) {
-      try { await el.click({ timeout: 3500, force: forca }); } catch { continue; }
-      await espera(1000);
-      if (await popupPeriodoAberto(page)) return true;
-    }
+  for (const faz of acoes) {
+    if (await popupPeriodoAberto(page)) return true; // ja aberto? nao clica de novo (evita fechar)
+    try { await faz(); } catch { /* tenta a proxima */ }
+    if (await esperaPopup(page, 4000)) return true;
   }
-  await dumpPeriodoDOM(page); // se nenhum abriu, guarda o HTML atual pra eu analisar
+  await dumpPeriodoDOM(page); // se nenhum abriu, guarda o HTML pra eu analisar
   return false;
 }
 async function definirPeriodo(page, conta, opt) {
