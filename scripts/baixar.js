@@ -55,7 +55,7 @@ function carregarContas() {
     + 'No GitHub, cadastre o segredo SICREDI_CONTAS.');
 }
 
-const VERSAO = 'v11.7 (corrige acento em Ultimos no abridor da antecipacao)';
+const VERSAO = 'v11.8 (antecipacao: abre o CARD de periodo pelo clique no card, nao no texto)';
 const espera = (ms) => new Promise(r => setTimeout(r, ms));
 
 /* Digita LETRA POR LETRA e ainda reforca com os eventos nativos que os portais
@@ -256,16 +256,61 @@ async function acharCamposData(page) {
   if (idx.length >= 2) return [all.nth(idx[0]), all.nth(idx[1])];
   return [page.getByLabel(/data inicial/i).first(), page.getByLabel(/data final/i).first()];
 }
+/* Antecipacao: o periodo fica num CARD no canto ("Período / Últimos 7 Dias" +
+   icone de calendario). Clicar no TEXTO do card nao abre nada — o onclick esta
+   no card (ou no botao do calendario). Aqui acho o rotulo "Período", subo ate o
+   ancestral clicavel e clico nele; se nao der, clico no icone de calendario. */
+async function abrirPeriodoAntecipacao(page) {
+  const clicou = await page.evaluate(() => {
+    const vis = (e) => {
+      const r = e.getBoundingClientRect();
+      return r.width > 0 && r.height > 0;
+    };
+    const norm = (s) => (s || '').replace(/\s+/g, ' ').trim();
+    // acha o card pelo rotulo "Período": um elemento curto que comeca com Periodo
+    const todos = Array.from(document.querySelectorAll('div,section,span,label,button,a,p'));
+    const rotulo = todos.find((e) => {
+      const t = norm(e.textContent);
+      return /^per[ií]odo\b/i.test(t) && t.length < 60 && vis(e) && e.getBoundingClientRect().width > 100;
+    });
+    if (!rotulo) return false;
+    // sobe ate um ancestral clicavel (button/role=button/cursor:pointer/onclick)
+    let n = rotulo;
+    for (let i = 0; i < 6 && n; i++) {
+      const cs = getComputedStyle(n);
+      if (n.tagName === 'BUTTON' || n.getAttribute('role') === 'button' || n.onclick || cs.cursor === 'pointer') {
+        n.click();
+        return true;
+      }
+      n = n.parentElement;
+    }
+    // fallback: clica no icone de calendario (svg/button) irmao do rotulo
+    const card = rotulo.closest('div');
+    const icone = card && card.querySelector('button, svg, i, [class*="calend" i], [class*="icon" i]');
+    if (icone) { (icone.closest('button') || icone).click(); return true; }
+    rotulo.click();
+    return true;
+  }).catch(() => false);
+  return clicou;
+}
 async function definirPeriodo(page, conta, opt) {
   /* Abre o seletor de periodo ANTES de preencher (sem abrir, os campos De/Ate
      ficam escondidos atras de um overlay e o clique nao pega). Duas telas:
      - Vendas: botao "Outro periodo" revela os campos.
-     - Antecipacao: nao tem esse botao; abre pelo campo "Periodo"/preset. */
+     - Antecipacao: nao tem esse botao; abre o card "Período". */
   const achouOutro = await clicar(page, [/outro per[ií]odo/i], { timeout: 6000 }).then(() => true).catch(() => false);
   if (!achouOutro) {
-    /* antecipacao: abre o popup clicando no preset mostrado ("Últimos 7 Dias")
-       ou no campo "Periodo". ATENCAO ao acento: "Últimos" tem Ú — use [uú]. */
-    await clicar(page, [/[uú]ltimos?\s*\d+\s*dias/i, /m[eê]s passado/i, /per[ií]odo/i], { timeout: 8000 });
+    // antecipacao: abre o card de periodo (clicando no card, nao no texto)
+    const abriu = await abrirPeriodoAntecipacao(page);
+    await espera(1200);
+    // confirma que o popup abriu (apareceram campos de data); se nao, tenta de novo
+    let temData = await page.locator('input[type="date"]').count().catch(() => 0);
+    if (!abriu || temData < 1) {
+      await abrirPeriodoAntecipacao(page);
+      await espera(1200);
+      temData = await page.locator('input[type="date"]').count().catch(() => 0);
+    }
+    if (temData < 1) throw new Error('nao abriu o card de periodo da antecipacao');
   }
   await espera(1500);
   const [ini, fim] = await acharCamposData(page);
@@ -327,8 +372,12 @@ async function processarConta(browser, conta, opt = {}) {
            por datas nao for aceito, NAO trava — baixa em 7 dias e avisa. */
         if (periodoCustom) {
           try { await definirPeriodo(page, conta, opt); }
-          catch {
-            console.log(`  ${conta.nome}: a tela de ANTECIPACAO nao aceitou o periodo por datas — baixando antecipacao em "Ultimos 7 dias". (me manda um print dessa tela de periodo pra eu acertar.)`);
+          catch (e) {
+            try {
+              fs.mkdirSync(PASTA_ERROS, { recursive: true });
+              await page.screenshot({ path: path.join(PASTA_ERROS, `antecipacao_periodo_${limpo(conta.nome)}_${hoje()}.png`), fullPage: true });
+            } catch { /* */ }
+            console.log(`  ${conta.nome}: a tela de ANTECIPACAO nao aceitou o periodo por datas (${e.message}) — salvei um print em erros\\antecipacao_periodo_... e baixei em "Ultimos 7 dias".`);
             await clicar(page, [/ltimos 7 dias/i], { timeout: 8000 }).catch(() => {});
           }
         } else await clicar(page, [/ltimos 7 dias/i], { timeout: 8000 });
