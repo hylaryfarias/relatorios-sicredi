@@ -55,7 +55,7 @@ function carregarContas() {
     + 'No GitHub, cadastre o segredo SICREDI_CONTAS.');
 }
 
-const VERSAO = 'v11.16 (antecipacao: preenche a data pelo motor do calendario, a prova de overlay)';
+const VERSAO = 'v11.17 (antecipacao: clique fisico no icone + rede de seguranca esperando a pessoa clicar)';
 const espera = (ms) => new Promise(r => setTimeout(r, ms));
 
 /* Digita LETRA POR LETRA e ainda reforca com os eventos nativos que os portais
@@ -332,6 +332,13 @@ async function abrirPeriodoAntecipacao(page) {
      "calendar-trigger-icon") e so entao cria os campos. O tooltip ALTERNA a cada
      clique, entao confiro "ja abriu?" ANTES de cada acao e paro assim que abre. */
   const acoes = [
+    // 0) clique FISICO de mouse na coordenada do centro do icone (trusted, igual
+    //    ao da pessoa) — e o que a imagem do icone (circulada) mostra.
+    async () => {
+      const b = await page.locator('[data-testid="generic-calendar-icon-calendar"]').first().boundingBox();
+      if (!b) throw new Error('sem box do icone');
+      await page.mouse.click(b.x + b.width / 2, b.y + b.height / 2);
+    },
     // 1) eventos de mouse via JS no link do icone (o que a OutSystems escuta) —
     //    nao depende de tamanho nem de overlay.
     async () => page.evaluate(() => {
@@ -363,6 +370,19 @@ async function abrirPeriodoAntecipacao(page) {
   await dumpPeriodoDOM(page); // se nenhum abriu, guarda o HTML pra eu analisar
   return false;
 }
+/* Rede de seguranca: se o robo nao abrir o calendario da antecipacao sozinho,
+   pede pra pessoa clicar (modo local) e detecta quando abrir — dai segue sozinho. */
+async function esperarHumanoAbrirPeriodo(page, loja) {
+  console.log(`\n  >>> ${loja}: nao consegui abrir o calendario da antecipacao sozinho.`);
+  console.log('  >>> CLIQUE no icone de calendario do "Período" (canto direito da tela).');
+  console.log('  >>> Assim que abrir, eu sigo sozinho (preencho as datas e baixo). Esperando ate 90s...\n');
+  const ate = Date.now() + 90000;
+  while (Date.now() < ate) {
+    if (await popupPeriodoAberto(page)) { console.log(`  >>> ${loja}: abriu, obrigado! seguindo.\n`); return true; }
+    await espera(1000);
+  }
+  return false;
+}
 async function definirPeriodo(page, conta, opt) {
   /* Abre o seletor de periodo ANTES de preencher (sem abrir, os campos De/Ate
      ficam escondidos atras de um overlay e o clique nao pega). Duas telas:
@@ -374,7 +394,11 @@ async function definirPeriodo(page, conta, opt) {
   if (!achouOutro) {
     let abriu = await abrirPeriodoAntecipacao(page);
     if (!abriu) { await espera(1000); abriu = await abrirPeriodoAntecipacao(page); }
-    if (!abriu) { await dumpPaginaCompleta(page); throw new Error('nao abriu o tooltip de periodo da antecipacao'); }
+    if (!abriu) {
+      await dumpPaginaCompleta(page);                 // guarda a pagina pra eu acertar o auto-abrir
+      if (MODO === 'local') abriu = await esperarHumanoAbrirPeriodo(page, conta.nome); // rede de seguranca
+    }
+    if (!abriu) throw new Error('nao abriu o tooltip de periodo da antecipacao');
     await espera(800);
     // os campos tem id terminando em FilterDateInit/FilterDateEnd. O preencher
     // tem modo a prova de overlay (seta pelo motor do calendario), entao mesmo
