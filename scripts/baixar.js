@@ -55,7 +55,7 @@ function carregarContas() {
     + 'No GitHub, cadastre o segredo SICREDI_CONTAS.');
 }
 
-const VERSAO = 'v11.12 (antecipacao: abre o periodo pelo botao data-testid generic-calendar-periodo-calendar)';
+const VERSAO = 'v11.13 (antecipacao: varias formas de abrir + salva o HTML da area de periodo)';
 const espera = (ms) => new Promise(r => setTimeout(r, ms));
 
 /* Digita LETRA POR LETRA e ainda reforca com os eventos nativos que os portais
@@ -270,24 +270,55 @@ async function popupPeriodoAberto(page) {
   }
   return false;
 }
+/* Salva o HTML da regiao do periodo (pra eu ver a estrutura exata e acertar o
+   clique sem chutar). Guarda em erros/antecipacao_periodo_dom.html. */
+async function dumpPeriodoDOM(page) {
+  try {
+    const html = await page.evaluate(() => {
+      const base = document.querySelector('[data-testid="generic-calendar-periodo-calendar"]')
+        || document.querySelector('input[id$="FilterDateInit"]');
+      let node = base;
+      for (let i = 0; i < 7 && node && node.parentElement; i++) node = node.parentElement;
+      return (node || document.body).outerHTML;
+    });
+    fs.mkdirSync(PASTA_ERROS, { recursive: true });
+    fs.writeFileSync(path.join(PASTA_ERROS, 'antecipacao_periodo_dom.html'), html);
+    console.log('  (salvei o HTML da area de periodo em erros\\antecipacao_periodo_dom.html)');
+  } catch { /* */ }
+}
 async function abrirPeriodoAntecipacao(page) {
-  /* O seletor de periodo e um componente OutSystems/flatpickr: um BOTAO com
-     data-testid="generic-calendar-periodo-calendar" (o texto "Últimos 7 Dias").
-     Clicar NELE e o que abre o calendario — e enquanto fechado esse botao fica
-     NA FRENTE dos campos de data (por isso dava "intercepts pointer events").
-     E o mesmo componente do vendas; la o "Outro período" destrava, aqui o
-     clique no botao destrava. Fallbacks por id, caso o testid mude. */
+  /* O seletor de periodo e um componente OutSystems/flatpickr. Tento varias
+     formas de abrir e confiro, a cada uma, se o calendario apareceu:
+     1) a API interna do flatpickr (._flatpickr.open), que ignora overlay;
+     2) clique de mouse real no botao do periodo (testid e ids), inclusive FORCADO;
+     3) clique forcado no proprio campo de data. */
+  await dumpPeriodoDOM(page);
+
+  // 1) API interna do flatpickr
+  const abriuApi = await page.evaluate(() => {
+    const cand = Array.from(document.querySelectorAll('input[id$="FilterDateInit"], .flatpickr-wrapper, [data-testid="generic-calendar-periodo-calendar"]'));
+    for (const c of cand) {
+      const fp = c._flatpickr || (c.closest && c.closest('.flatpickr-wrapper') && c.closest('.flatpickr-wrapper')._flatpickr);
+      if (fp && typeof fp.open === 'function') { fp.open(); return true; }
+    }
+    return false;
+  }).catch(() => false);
+  if (abriuApi) { await espera(900); if (await popupPeriodoAberto(page)) return true; }
+
+  // 2) e 3) cliques de mouse (normal e forcado)
   const seletores = [
     '[data-testid="generic-calendar-periodo-calendar"]',
     '[id*="data_range_picker_btn"]',
-    '[id*="periodo"][id*="calendar"]',
+    'input[id$="FilterDateInit"]',
   ];
   for (const sel of seletores) {
     const el = page.locator(sel).first();
-    if (!(await el.isVisible({ timeout: 1000 }).catch(() => false))) continue;
-    try { await el.click({ timeout: 4000 }); } catch { continue; }
-    await espera(1000);
-    if (await popupPeriodoAberto(page)) return true;
+    if (!(await el.count().catch(() => 0))) continue;
+    for (const forca of [false, true]) {
+      try { await el.click({ timeout: 3500, force: forca }); } catch { continue; }
+      await espera(900);
+      if (await popupPeriodoAberto(page)) return true;
+    }
   }
   return false;
 }
