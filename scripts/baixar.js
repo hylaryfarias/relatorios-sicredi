@@ -55,7 +55,7 @@ function carregarContas() {
     + 'No GitHub, cadastre o segredo SICREDI_CONTAS.');
 }
 
-const VERSAO = 'v11.5 (abre o seletor de periodo tambem na antecipacao)';
+const VERSAO = 'v11.6 (volta a abrir Outro periodo no vendas; abre o campo Periodo na antecipacao)';
 const espera = (ms) => new Promise(r => setTimeout(r, ms));
 
 /* Digita LETRA POR LETRA e ainda reforca com os eventos nativos que os portais
@@ -256,28 +256,18 @@ async function acharCamposData(page) {
   if (idx.length >= 2) return [all.nth(idx[0]), all.nth(idx[1])];
   return [page.getByLabel(/data inicial/i).first(), page.getByLabel(/data final/i).first()];
 }
-/* os dois campos de data ja VISIVEIS na tela (popup aberto), ou null */
-async function camposDataVisiveis(page) {
-  const [a, b] = await acharCamposData(page);
-  const va = await a.isVisible({ timeout: 500 }).catch(() => false);
-  const vb = await b.isVisible({ timeout: 500 }).catch(() => false);
-  return (va && vb) ? [a, b] : null;
-}
 async function definirPeriodo(page, conta, opt) {
-  /* Abre o seletor de periodo e preenche De/Ate. Duas telas DIFERENTES:
+  /* Abre o seletor de periodo ANTES de preencher (sem abrir, os campos De/Ate
+     ficam escondidos atras de um overlay e o clique nao pega). Duas telas:
      - Vendas: botao "Outro periodo" revela os campos.
-     - Antecipacao: nao tem "Outro periodo"; e um campo "Periodo" que abre um
-       popup com os campos De/Ate ja dentro.
-     Por isso tenta abrir de varios jeitos ate os campos ficarem visiveis. */
-  let campos = await camposDataVisiveis(page);
-  const aberturas = [[/outro per[ií]odo/i], [/^\s*per[ií]odo\s*$/i], [/ultimos?\s*\d+\s*dias/i], [/mes passado/i]];
-  for (let k = 0; k < aberturas.length && !campos; k++) {
-    await clicar(page, aberturas[k], { timeout: 4000 }).catch(() => {});
-    await espera(1200);
-    campos = await camposDataVisiveis(page);
+     - Antecipacao: nao tem esse botao; abre pelo campo "Periodo"/preset. */
+  const achouOutro = await clicar(page, [/outro per[ií]odo/i], { timeout: 6000 }).then(() => true).catch(() => false);
+  if (!achouOutro) {
+    /* antecipacao: abre o popup clicando no campo "Periodo" ou no preset mostrado */
+    await clicar(page, [/^\s*per[ií]odo\s*$/i, /ultimos?\s*\d+\s*dias/i, /mes passado/i], { timeout: 6000 });
   }
-  if (!campos) throw new Error('nao consegui abrir o seletor de periodo (De/Ate)');
-  const [ini, fim] = campos;
+  await espera(1500);
+  const [ini, fim] = await acharCamposData(page);
   await preencherData(ini, opt.deISO, opt.de);
   await preencherData(fim, opt.ateISO, opt.ate);
   /* print de diagnostico ANTES de aplicar, para conferir se as datas entraram */
