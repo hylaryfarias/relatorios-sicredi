@@ -55,7 +55,7 @@ function carregarContas() {
     + 'No GitHub, cadastre o segredo SICREDI_CONTAS.');
 }
 
-const VERSAO = 'v11.11 (antecipacao: clica no icone de calendario / borda direita do card Periodo)';
+const VERSAO = 'v11.12 (antecipacao: abre o periodo pelo botao data-testid generic-calendar-periodo-calendar)';
 const espera = (ms) => new Promise(r => setTimeout(r, ms));
 
 /* Digita LETRA POR LETRA e ainda reforca com os eventos nativos que os portais
@@ -260,43 +260,33 @@ async function acharCamposData(page) {
    icone de calendario). Clicar no TEXTO do card nao abre nada — o onclick esta
    no card (ou no botao do calendario). Aqui acho o rotulo "Período", subo ate o
    ancestral clicavel e clico nele; se nao der, clico no icone de calendario. */
-/* O popup de periodo esta aberto quando aparecem os campos "Data Inicial/Final"
-   (seja <input type=date>, seja por rotulo) ou o botao "Aplicar". */
+/* O popup de periodo esta aberto quando aparece o calendario flatpickr, o botao
+   "Aplicar" ou os campos "Data Inicial/Final". */
 async function popupPeriodoAberto(page) {
+  if (await page.locator('.flatpickr-calendar.open, [class*="flatpickr"][class*="open"]').count().catch(() => 0) >= 1) return true;
   if (await page.locator('input[type="date"]').count().catch(() => 0) >= 1) return true;
-  for (const re of [/data inicial/i, /data final/i]) {
+  for (const re of [/data inicial/i, /data final/i, /^\s*aplicar\s*$/i]) {
     if (await page.getByText(re).first().isVisible({ timeout: 400 }).catch(() => false)) return true;
   }
   return false;
 }
 async function abrirPeriodoAntecipacao(page) {
-  /* Quem abre o popup e o ICONE DE CALENDARIO no canto direito do card "Período"
-     — nao o texto. Acho o CARD (menor elemento que tem "Período" E "Últimos N
-     Dias"), clico no icone de calendario dentro dele e, de reforco, na BORDA
-     DIREITA do card (onde o icone fica) pela posicao do mouse — assim acerto o
-     calendario sem depender de como o HTML foi montado. Tudo escopo DO CARD:
-     nunca toca no sininho de Notificacoes do topo. Confiro se o popup abriu a
-     cada tentativa. */
-  const card = page.locator('div')
-    .filter({ has: page.getByText(/^\s*per[ií]odo\s*$/i) })
-    .filter({ hasText: /[uú]ltimos?\s*\d+\s*dias|\d{2}\/\d{2}\/\d{4}/i })
-    .last();
-
-  const tentativas = [
-    // 1) o icone de calendario (svg/button/i) DENTRO do card
-    async () => { await card.locator('svg, button, i, [class*="calend" i]').last().click({ timeout: 3000 }); },
-    // 2) a borda direita do card, onde o icone fica (posicao do mouse)
-    async () => {
-      const b = await card.boundingBox();
-      if (!b) throw new Error('sem box');
-      await page.mouse.click(b.x + b.width - 18, b.y + b.height / 2);
-    },
-    // 3) o card inteiro (centro)
-    async () => { await card.click({ timeout: 3000 }); },
+  /* O seletor de periodo e um componente OutSystems/flatpickr: um BOTAO com
+     data-testid="generic-calendar-periodo-calendar" (o texto "Últimos 7 Dias").
+     Clicar NELE e o que abre o calendario — e enquanto fechado esse botao fica
+     NA FRENTE dos campos de data (por isso dava "intercepts pointer events").
+     E o mesmo componente do vendas; la o "Outro período" destrava, aqui o
+     clique no botao destrava. Fallbacks por id, caso o testid mude. */
+  const seletores = [
+    '[data-testid="generic-calendar-periodo-calendar"]',
+    '[id*="data_range_picker_btn"]',
+    '[id*="periodo"][id*="calendar"]',
   ];
-  for (const faz of tentativas) {
-    try { await faz(); } catch { continue; }
-    await espera(900);
+  for (const sel of seletores) {
+    const el = page.locator(sel).first();
+    if (!(await el.isVisible({ timeout: 1000 }).catch(() => false))) continue;
+    try { await el.click({ timeout: 4000 }); } catch { continue; }
+    await espera(1000);
     if (await popupPeriodoAberto(page)) return true;
   }
   return false;
