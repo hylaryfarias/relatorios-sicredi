@@ -55,7 +55,7 @@ function carregarContas() {
     + 'No GitHub, cadastre o segredo SICREDI_CONTAS.');
 }
 
-const VERSAO = 'v11.8 (antecipacao: abre o CARD de periodo pelo clique no card, nao no texto)';
+const VERSAO = 'v11.9 (antecipacao: clique de MOUSE REAL no card de periodo, com varios alvos)';
 const espera = (ms) => new Promise(r => setTimeout(r, ms));
 
 /* Digita LETRA POR LETRA e ainda reforca com os eventos nativos que os portais
@@ -261,37 +261,30 @@ async function acharCamposData(page) {
    no card (ou no botao do calendario). Aqui acho o rotulo "Período", subo ate o
    ancestral clicavel e clico nele; se nao der, clico no icone de calendario. */
 async function abrirPeriodoAntecipacao(page) {
-  const clicou = await page.evaluate(() => {
-    const vis = (e) => {
-      const r = e.getBoundingClientRect();
-      return r.width > 0 && r.height > 0;
-    };
-    const norm = (s) => (s || '').replace(/\s+/g, ' ').trim();
-    // acha o card pelo rotulo "Período": um elemento curto que comeca com Periodo
-    const todos = Array.from(document.querySelectorAll('div,section,span,label,button,a,p'));
-    const rotulo = todos.find((e) => {
-      const t = norm(e.textContent);
-      return /^per[ií]odo\b/i.test(t) && t.length < 60 && vis(e) && e.getBoundingClientRect().width > 100;
-    });
-    if (!rotulo) return false;
-    // sobe ate um ancestral clicavel (button/role=button/cursor:pointer/onclick)
-    let n = rotulo;
-    for (let i = 0; i < 6 && n; i++) {
-      const cs = getComputedStyle(n);
-      if (n.tagName === 'BUTTON' || n.getAttribute('role') === 'button' || n.onclick || cs.cursor === 'pointer') {
-        n.click();
-        return true;
-      }
-      n = n.parentElement;
-    }
-    // fallback: clica no icone de calendario (svg/button) irmao do rotulo
-    const card = rotulo.closest('div');
-    const icone = card && card.querySelector('button, svg, i, [class*="calend" i], [class*="icon" i]');
-    if (icone) { (icone.closest('button') || icone).click(); return true; }
-    rotulo.click();
-    return true;
-  }).catch(() => false);
-  return clicou;
+  /* O site e React: um clique "de codigo" (element.click no DOM) as vezes nao e
+     escutado. Aqui uso CLIQUE DE MOUSE DE VERDADE (Playwright) em varios alvos
+     possiveis — o card, o pai do card, o icone de calendario e o texto do valor —
+     e, depois de CADA clique, confiro se os campos de data apareceram. Para no
+     primeiro que abrir o popup. */
+  const rotulo = page.getByText(/^\s*per[ií]odo\s*$/i).first();
+  const valor = page.getByText(/[uú]ltimos?\s*\d+\s*dias/i).first();
+  const alvos = [
+    () => rotulo.locator('xpath=..'),        // card (pai imediato do rotulo "Período")
+    () => rotulo.locator('xpath=../..'),     // card (um nivel acima)
+    () => valor.locator('xpath=..'),         // pai do valor "Últimos 7 Dias"
+    () => valor.locator('xpath=../..'),
+    () => rotulo,                            // o proprio rotulo
+    () => page.locator('[class*="calend" i], [class*="icon" i] svg, svg[class*="calend" i]').first(),
+  ];
+  for (const fazAlvo of alvos) {
+    let el;
+    try { el = fazAlvo(); } catch { continue; }
+    if (!(await el.isVisible({ timeout: 1000 }).catch(() => false))) continue;
+    try { await el.click({ timeout: 3000 }); } catch { continue; }
+    await espera(900);
+    if (await page.locator('input[type="date"]').count().catch(() => 0) >= 1) return true;
+  }
+  return false;
 }
 async function definirPeriodo(page, conta, opt) {
   /* Abre o seletor de periodo ANTES de preencher (sem abrir, os campos De/Ate
