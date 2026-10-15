@@ -55,7 +55,7 @@ function carregarContas() {
     + 'No GitHub, cadastre o segredo SICREDI_CONTAS.');
 }
 
-const VERSAO = 'v11.9 (antecipacao: clique de MOUSE REAL no card de periodo, com varios alvos)';
+const VERSAO = 'v11.10 (antecipacao: so clica dentro do card Periodo; nunca no sininho de Notificacoes)';
 const espera = (ms) => new Promise(r => setTimeout(r, ms));
 
 /* Digita LETRA POR LETRA e ainda reforca com os eventos nativos que os portais
@@ -260,21 +260,31 @@ async function acharCamposData(page) {
    icone de calendario). Clicar no TEXTO do card nao abre nada — o onclick esta
    no card (ou no botao do calendario). Aqui acho o rotulo "Período", subo ate o
    ancestral clicavel e clico nele; se nao der, clico no icone de calendario. */
+/* O popup de periodo esta aberto quando aparecem os campos "Data Inicial/Final"
+   (seja <input type=date>, seja por rotulo) ou o botao "Aplicar". */
+async function popupPeriodoAberto(page) {
+  if (await page.locator('input[type="date"]').count().catch(() => 0) >= 1) return true;
+  for (const re of [/data inicial/i, /data final/i]) {
+    if (await page.getByText(re).first().isVisible({ timeout: 400 }).catch(() => false)) return true;
+  }
+  return false;
+}
 async function abrirPeriodoAntecipacao(page) {
   /* O site e React: um clique "de codigo" (element.click no DOM) as vezes nao e
-     escutado. Aqui uso CLIQUE DE MOUSE DE VERDADE (Playwright) em varios alvos
-     possiveis — o card, o pai do card, o icone de calendario e o texto do valor —
-     e, depois de CADA clique, confiro se os campos de data apareceram. Para no
-     primeiro que abrir o popup. */
+     escutado. Aqui uso CLIQUE DE MOUSE DE VERDADE (Playwright) SO em alvos DENTRO
+     do card "Período" (o rotulo, o valor "Últimos N Dias" e os pais deles) — nunca
+     em icones soltos da tela (o sininho de Notificacoes tem "icon" no nome e nao
+     pode ser clicado). Depois de CADA clique, confiro se o popup abriu. */
   const rotulo = page.getByText(/^\s*per[ií]odo\s*$/i).first();
   const valor = page.getByText(/[uú]ltimos?\s*\d+\s*dias/i).first();
   const alvos = [
     () => rotulo.locator('xpath=..'),        // card (pai imediato do rotulo "Período")
     () => rotulo.locator('xpath=../..'),     // card (um nivel acima)
+    () => rotulo.locator('xpath=../../..'),  // card (dois niveis acima)
     () => valor.locator('xpath=..'),         // pai do valor "Últimos 7 Dias"
     () => valor.locator('xpath=../..'),
-    () => rotulo,                            // o proprio rotulo
-    () => page.locator('[class*="calend" i], [class*="icon" i] svg, svg[class*="calend" i]').first(),
+    () => rotulo,                            // o proprio rotulo "Período"
+    () => valor,                             // o proprio valor
   ];
   for (const fazAlvo of alvos) {
     let el;
@@ -282,7 +292,7 @@ async function abrirPeriodoAntecipacao(page) {
     if (!(await el.isVisible({ timeout: 1000 }).catch(() => false))) continue;
     try { await el.click({ timeout: 3000 }); } catch { continue; }
     await espera(900);
-    if (await page.locator('input[type="date"]').count().catch(() => 0) >= 1) return true;
+    if (await popupPeriodoAberto(page)) return true;
   }
   return false;
 }
@@ -294,16 +304,9 @@ async function definirPeriodo(page, conta, opt) {
   const achouOutro = await clicar(page, [/outro per[ií]odo/i], { timeout: 6000 }).then(() => true).catch(() => false);
   if (!achouOutro) {
     // antecipacao: abre o card de periodo (clicando no card, nao no texto)
-    const abriu = await abrirPeriodoAntecipacao(page);
-    await espera(1200);
-    // confirma que o popup abriu (apareceram campos de data); se nao, tenta de novo
-    let temData = await page.locator('input[type="date"]').count().catch(() => 0);
-    if (!abriu || temData < 1) {
-      await abrirPeriodoAntecipacao(page);
-      await espera(1200);
-      temData = await page.locator('input[type="date"]').count().catch(() => 0);
-    }
-    if (temData < 1) throw new Error('nao abriu o card de periodo da antecipacao');
+    let abriu = await abrirPeriodoAntecipacao(page);
+    if (!abriu) { await espera(1000); abriu = await abrirPeriodoAntecipacao(page); }
+    if (!abriu && !(await popupPeriodoAberto(page))) throw new Error('nao abriu o card de periodo da antecipacao');
   }
   await espera(1500);
   const [ini, fim] = await acharCamposData(page);
