@@ -55,7 +55,7 @@ function carregarContas() {
     + 'No GitHub, cadastre o segredo SICREDI_CONTAS.');
 }
 
-const VERSAO = 'v11.17 (antecipacao: clique fisico no icone + rede de seguranca esperando a pessoa clicar)';
+const VERSAO = 'v11.18 (antecipacao: abre o icone por todos os jeitos — mouse, teclado Enter, hover)';
 const espera = (ms) => new Promise(r => setTimeout(r, ms));
 
 /* Digita LETRA POR LETRA e ainda reforca com os eventos nativos que os portais
@@ -295,11 +295,12 @@ async function acharCamposData(page) {
    fechado e so o preenche (campos + Aplicar) ao abrir. Entao "conteudo com
    filhos" e o sinal certeiro de que abriu. */
 async function popupPeriodoAberto(page) {
-  const cheio = await page.locator('.custom-range-picker .osui-tooltip__content, [id$="-Content"][role="tooltip"]').first()
-    .evaluate(el => !!el && el.children.length > 0).catch(() => false);
-  if (cheio) return true;
-  if (await page.getByText(/^\s*aplicar\s*$/i).first().isVisible({ timeout: 300 }).catch(() => false)) return true;
-  return false;
+  // sinal FORTE: o botao "Aplicar" so existe com o tooltip aberto.
+  if (await page.getByText(/^\s*aplicar\s*$/i).first().isVisible({ timeout: 400 }).catch(() => false)) return true;
+  // ou um campo DENTRO do conteudo do tooltip (nao o campo de fundo, coberto).
+  const temCampo = await page.locator('.custom-range-picker .osui-tooltip__content input, [id$="-Content"][role="tooltip"] input')
+    .first().isVisible({ timeout: 300 }).catch(() => false);
+  return !!temCampo;
 }
 async function esperaPopup(page, ms = 5000) {
   const ate = Date.now() + ms;
@@ -338,6 +339,23 @@ async function abrirPeriodoAntecipacao(page) {
       const b = await page.locator('[data-testid="generic-calendar-icon-calendar"]').first().boundingBox();
       if (!b) throw new Error('sem box do icone');
       await page.mouse.click(b.x + b.width / 2, b.y + b.height / 2);
+    },
+    // 0b) TECLADO: focar o link do icone e apertar Enter/Espaco — jeito mais
+    //     confiavel de acionar o handler de um <a>, sem depender de overlay.
+    async () => {
+      const a = page.locator('[data-testid="generic-calendar-icon-calendar"] a').first();
+      await a.focus({ timeout: 2000 });
+      await a.press('Enter');
+    },
+    async () => {
+      const a = page.locator('[data-testid="generic-calendar-icon-calendar"] a').first();
+      await a.focus({ timeout: 2000 });
+      await a.press(' ');
+    },
+    // 0c) HOVER e segura (caso o tooltip abra por passar o mouse)
+    async () => {
+      await page.locator('[data-testid="calendar-trigger-icon"]').first().hover({ timeout: 2000, force: true });
+      await espera(700);
     },
     // 1) eventos de mouse via JS no link do icone (o que a OutSystems escuta) —
     //    nao depende de tamanho nem de overlay.
@@ -395,10 +413,9 @@ async function definirPeriodo(page, conta, opt) {
     let abriu = await abrirPeriodoAntecipacao(page);
     if (!abriu) { await espera(1000); abriu = await abrirPeriodoAntecipacao(page); }
     if (!abriu) {
-      await dumpPaginaCompleta(page);                 // guarda a pagina pra eu acertar o auto-abrir
-      if (MODO === 'local') abriu = await esperarHumanoAbrirPeriodo(page, conta.nome); // rede de seguranca
+      await dumpPaginaCompleta(page);                 // guarda a pagina inteira pra eu acertar o auto-abrir
+      throw new Error('nao abriu o tooltip de periodo da antecipacao');
     }
-    if (!abriu) throw new Error('nao abriu o tooltip de periodo da antecipacao');
     await espera(800);
     // os campos tem id terminando em FilterDateInit/FilterDateEnd. O preencher
     // tem modo a prova de overlay (seta pelo motor do calendario), entao mesmo
