@@ -55,7 +55,7 @@ function carregarContas() {
     + 'No GitHub, cadastre o segredo SICREDI_CONTAS.');
 }
 
-const VERSAO = 'v11.20 (antecipacao: Aplicar por texto/botao-no-tooltip/testid/Enter + dump se falhar)';
+const VERSAO = 'v11.21 (antecipacao: clica no Aplicar exato — btn-apply / generic-calendar-button-aplicar)';
 const espera = (ms) => new Promise(r => setTimeout(r, ms));
 
 /* Digita LETRA POR LETRA e ainda reforca com os eventos nativos que os portais
@@ -401,24 +401,27 @@ async function esperarHumanoAbrirPeriodo(page, loja) {
   }
   return false;
 }
-/* Clica no "Aplicar" do seletor de periodo. Tenta por texto, por botao dentro do
-   tooltip aberto, por testid e por tecla Enter. Se nada funcionar, salva a pagina
-   (com o tooltip aberto) para eu ver o botao exato. */
+/* Clica no "Aplicar" do seletor de periodo. O botao real (visto no HTML) e:
+   <button class="btn-apply" data-testid="generic-calendar-button-aplicar">Aplicar</button>
+   e fica no calendario flatpickr (fora do tooltip). Miro nele direto; se nao der
+   por clique normal, aciono o clique no proprio motor (ignora overlay). */
 async function aplicarPeriodo(page) {
-  // 1) por texto
-  const porTexto = await clicar(page, [/^\s*aplicar\s*$/i, /aplicar per[ií]odo/i, /aplicar/i, /^\s*confirmar\s*$/i], { timeout: 4000 })
-    .then(() => true).catch(() => false);
+  const btn = page.locator('[data-testid="generic-calendar-button-aplicar"], button.btn-apply').first();
+  // 1) clique normal (evento confiavel)
+  try { await btn.waitFor({ state: 'visible', timeout: 5000 }); await btn.click({ timeout: 4000 }); return; } catch { /* */ }
+  // 2) clique forcado (ignora algo na frente)
+  try { await btn.click({ timeout: 3000, force: true }); return; } catch { /* */ }
+  // 3) clique no proprio motor (ignora visibilidade/overlay)
+  const ok = await page.evaluate(() => {
+    const b = document.querySelector('[data-testid="generic-calendar-button-aplicar"]')
+           || document.querySelector('button.btn-apply');
+    if (b) { b.click(); return true; }
+    return false;
+  }).catch(() => false);
+  if (ok) return;
+  // 4) ultimo recurso: por texto
+  const porTexto = await clicar(page, [/^\s*aplicar\s*$/i, /aplicar/i], { timeout: 4000 }).then(() => true).catch(() => false);
   if (porTexto) return;
-  // 2) botao/link DENTRO do tooltip aberto (o botao primario costuma ser o ultimo)
-  const dentro = page.locator('.custom-range-picker button, .custom-range-picker a[data-link], [id$="-Content"][role="tooltip"] button, [id$="-Content"][role="tooltip"] a[data-link]');
-  const nd = await dentro.count().catch(() => 0);
-  if (nd) { try { await dentro.last().click({ timeout: 4000 }); return; } catch { /* */ } }
-  // 3) por testid/id com aplicar/apply/confirm
-  const porId = page.locator('[data-testid*="aplicar" i], [data-testid*="apply" i], [data-testid*="confirm" i], [id*="aplicar" i], [id*="Apply" i]').first();
-  if (await porId.count().catch(() => 0)) { try { await porId.click({ timeout: 4000 }); return; } catch { /* */ } }
-  // 4) Enter no campo final (alguns range pickers aplicam no Enter)
-  try { await page.locator('input[id$="FilterDateEnd"]').first().press('Enter', { timeout: 2000 }); if (!(await popupPeriodoAberto(page))) return; } catch { /* */ }
-  // nada funcionou: guarda a pagina com o tooltip aberto
   await dumpPaginaCompleta(page);
   throw new Error('nao achei o botao Aplicar do periodo');
 }
