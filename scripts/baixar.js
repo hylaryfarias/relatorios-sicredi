@@ -55,7 +55,7 @@ function carregarContas() {
     + 'No GitHub, cadastre o segredo SICREDI_CONTAS.');
 }
 
-const VERSAO = 'v11.2 (acha os 2 campos de data pelo valor + print de diagnostico)';
+const VERSAO = 'v11.3 (periodo por datas tambem nas 2 antecipacoes, nao so no vendas)';
 const espera = (ms) => new Promise(r => setTimeout(r, ms));
 
 /* Digita LETRA POR LETRA e ainda reforca com os eventos nativos que os portais
@@ -314,12 +314,14 @@ async function processarConta(browser, conta, opt = {}) {
         await espera(2000);
         await clicar(page, [/relat[oó]rio de antecipa/i], { timeout: 12000 });
         await espera(1800);
-        await clicar(page, [/ltimos 7 dias/i], { timeout: 8000 }); // periodo, uma vez so
+        /* periodo: mesmo do vendas (datas) quando --de/--ate; senao, Ultimos 7 dias */
+        if (periodoCustom) await definirPeriodo(page, conta, opt);
+        else await clicar(page, [/ltimos 7 dias/i], { timeout: 8000 });
         await espera(1500);
         // 1) detalhado por arranjo
         feitos.push(await baixar(page, conta, {
-          titulo: 'Antecipacao detalhado (por arranjo)',
-          arquivoBase: `antecipacao_detalhado_${limpo(conta.nome)}`,
+          titulo: periodoCustom ? `Antecipacao detalhado (${opt.de} a ${opt.ate})` : 'Antecipacao detalhado (por arranjo)',
+          arquivoBase: `antecipacao_detalhado_${limpo(conta.nome)}${sufixo}`,
           etapas: [
             { textos: [/exportar/i], espera: 1500 },
             { textos: [/relat[oó]rio detalhado/i], espera: 800 },
@@ -327,8 +329,8 @@ async function processarConta(browser, conta, opt = {}) {
         }));
         // 2) simplificado por antecipacao
         feitos.push(await baixar(page, conta, {
-          titulo: 'Antecipacao simplificado (por antecipacao)',
-          arquivoBase: `antecipacao_simplificado_${limpo(conta.nome)}`,
+          titulo: periodoCustom ? `Antecipacao simplificado (${opt.de} a ${opt.ate})` : 'Antecipacao simplificado (por antecipacao)',
+          arquivoBase: `antecipacao_simplificado_${limpo(conta.nome)}${sufixo}`,
           etapas: [
             { textos: [/exportar/i], espera: 1500 },
             { textos: [/relat[oó]rio simplificado/i], espera: 800 },
