@@ -55,7 +55,7 @@ function carregarContas() {
     + 'No GitHub, cadastre o segredo SICREDI_CONTAS.');
 }
 
-const VERSAO = 'v11.15 (antecipacao: abre o tooltip do calendario sem alternar; depois digita igual vendas)';
+const VERSAO = 'v11.16 (antecipacao: preenche a data pelo motor do calendario, a prova de overlay)';
 const espera = (ms) => new Promise(r => setTimeout(r, ms));
 
 /* Digita LETRA POR LETRA e ainda reforca com os eventos nativos que os portais
@@ -224,21 +224,52 @@ async function baixar(page, conta, { titulo, etapas, arquivoBase }) {
    Aplicar. As datas sao <input type=date> (icone de calendario nativo), que o
    Playwright preenche em formato ISO (AAAA-MM-DD); se forem texto, usa DD/MM/AAAA. */
 async function preencherData(campo, iso, br) {
-  await campo.waitFor({ state: 'visible', timeout: 8000 });
-  const tipo = (await campo.getAttribute('type').catch(() => '') || '').toLowerCase();
-  if (tipo === 'date' && iso) {
-    await campo.fill(iso); // input type=date: seta direto em ISO, sem digitar
-  } else {
-    await campo.click();
-    await campo.fill('');
-    await campo.pressSequentially(br, { delay: 60 });
-  }
-  await campo.evaluate(el => {
-    el.dispatchEvent(new Event('input', { bubbles: true }));
-    el.dispatchEvent(new Event('change', { bubbles: true }));
-    el.dispatchEvent(new Event('blur', { bubbles: true }));
-  }).catch(() => {});
+  // 1) jeito normal: clicar e digitar (funciona no vendas). Se o campo estiver
+  //    COBERTO por um overlay (caso da antecipacao), o clique falha — e ai cai
+  //    pro modo 2.
+  try {
+    await campo.waitFor({ state: 'visible', timeout: 5000 });
+    const tipo = (await campo.getAttribute('type').catch(() => '') || '').toLowerCase();
+    if (tipo === 'date' && iso) {
+      await campo.fill(iso); // input type=date: seta direto em ISO, sem digitar
+    } else {
+      await campo.click({ timeout: 4000 });
+      await campo.fill('');
+      await campo.pressSequentially(br, { delay: 60 });
+    }
+    await campo.evaluate(el => {
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+      el.dispatchEvent(new Event('blur', { bubbles: true }));
+    }).catch(() => {});
+    await espera(400);
+    return;
+  } catch { /* cai pro modo 2 */ }
+
+  // 2) modo a prova de overlay: seta a data DIRETO no motor do calendario
+  //    (flatpickr.setDate) ou no valor do input, disparando os eventos nativos —
+  //    nao depende de clicar no campo.
+  await campo.evaluate((el, { iso, br }) => {
+    const d = iso ? new Date(iso + 'T00:00:00') : null;
+    const fp = el._flatpickr
+      || (el.closest && el.closest('.flatpickr-wrapper') && el.closest('.flatpickr-wrapper')._flatpickr)
+      || (el.parentElement && el.parentElement._flatpickr);
+    if (fp && typeof fp.setDate === 'function') { fp.setDate(d || br, true); return; }
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+    setter.call(el, br);
+    for (const t of ['input', 'change', 'blur']) el.dispatchEvent(new Event(t, { bubbles: true }));
+  }, { iso, br }).catch(() => {});
   await espera(400);
+}
+/* Salva a PAGINA INTEIRA (pra eu ver tudo: campos, overlay e Aplicar no estado
+   real). Guarda em erros/antecipacao_pagina_completa.html. */
+async function dumpPaginaCompleta(page) {
+  try {
+    const html = await page.content();
+    fs.mkdirSync(PASTA_ERROS, { recursive: true });
+    fs.writeFileSync(path.join(PASTA_ERROS, 'antecipacao_pagina_completa.html'), html);
+    console.log('  (salvei a pagina inteira em erros\\antecipacao_pagina_completa.html)');
+  } catch { /* */ }
 }
 /* acha os DOIS campos de data do popup (inicial e final), como elementos
    DISTINTOS. Tenta: 1) input[type=date]; 2) inputs cujo VALOR ja tem cara de
@@ -338,12 +369,32 @@ async function definirPeriodo(page, conta, opt) {
      - Vendas: botao "Outro periodo" revela os campos.
      - Antecipacao: nao tem esse botao; abre o card "Período". */
   const achouOutro = await clicar(page, [/outro per[ií]odo/i], { timeout: 6000 }).then(() => true).catch(() => false);
+
+  // ===== ANTECIPACAO (nao tem "Outro período") =====
   if (!achouOutro) {
-    // antecipacao: abre o card de periodo (clicando no card, nao no texto)
     let abriu = await abrirPeriodoAntecipacao(page);
     if (!abriu) { await espera(1000); abriu = await abrirPeriodoAntecipacao(page); }
-    if (!abriu && !(await popupPeriodoAberto(page))) throw new Error('nao abriu o card de periodo da antecipacao');
+    if (!abriu) { await dumpPaginaCompleta(page); throw new Error('nao abriu o tooltip de periodo da antecipacao'); }
+    await espera(800);
+    // os campos tem id terminando em FilterDateInit/FilterDateEnd. O preencher
+    // tem modo a prova de overlay (seta pelo motor do calendario), entao mesmo
+    // que o rotulo esteja na frente, a data entra.
+    const ini = page.locator('input[id$="FilterDateInit"]').first();
+    const fim = page.locator('input[id$="FilterDateEnd"]').first();
+    await preencherData(ini, opt.deISO, opt.de);
+    await preencherData(fim, opt.ateISO, opt.ate);
+    try {
+      fs.mkdirSync(PASTA_ERROS, { recursive: true });
+      await page.screenshot({ path: path.join(PASTA_ERROS, `periodo_${limpo(conta.nome)}_${hoje()}.png`), fullPage: true });
+      const vi = await ini.inputValue().catch(() => '?'); const vf = await fim.inputValue().catch(() => '?');
+      console.log(`  ${conta.nome}: periodo preenchido -> inicial="${vi}" final="${vf}"`);
+    } catch { /* */ }
+    await clicar(page, [/aplicar/i], { timeout: 8000 });
+    await espera(2000);
+    return;
   }
+
+  // ===== VENDAS (clicou em "Outro período") =====
   await espera(1500);
   const [ini, fim] = await acharCamposData(page);
   await preencherData(ini, opt.deISO, opt.de);
