@@ -55,7 +55,7 @@ function carregarContas() {
     + 'No GitHub, cadastre o segredo SICREDI_CONTAS.');
 }
 
-const VERSAO = 'v11.3 (periodo por datas tambem nas 2 antecipacoes, nao so no vendas)';
+const VERSAO = 'v11.4 (antecipacao nao trava se o periodo por datas nao for aceito)';
 const espera = (ms) => new Promise(r => setTimeout(r, ms));
 
 /* Digita LETRA POR LETRA e ainda reforca com os eventos nativos que os portais
@@ -314,9 +314,16 @@ async function processarConta(browser, conta, opt = {}) {
         await espera(2000);
         await clicar(page, [/relat[oó]rio de antecipa/i], { timeout: 12000 });
         await espera(1800);
-        /* periodo: mesmo do vendas (datas) quando --de/--ate; senao, Ultimos 7 dias */
-        if (periodoCustom) await definirPeriodo(page, conta, opt);
-        else await clicar(page, [/ltimos 7 dias/i], { timeout: 8000 });
+        /* periodo: mesmo do vendas (datas) quando --de/--ate; senao, Ultimos 7 dias.
+           A tela de antecipacao pode ter o seletor DIFERENTE do vendas; se o periodo
+           por datas nao for aceito, NAO trava — baixa em 7 dias e avisa. */
+        if (periodoCustom) {
+          try { await definirPeriodo(page, conta, opt); }
+          catch {
+            console.log(`  ${conta.nome}: a tela de ANTECIPACAO nao aceitou o periodo por datas — baixando antecipacao em "Ultimos 7 dias". (me manda um print dessa tela de periodo pra eu acertar.)`);
+            await clicar(page, [/ltimos 7 dias/i], { timeout: 8000 }).catch(() => {});
+          }
+        } else await clicar(page, [/ltimos 7 dias/i], { timeout: 8000 });
         await espera(1500);
         // 1) detalhado por arranjo
         feitos.push(await baixar(page, conta, {
