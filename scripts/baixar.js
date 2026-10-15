@@ -55,7 +55,7 @@ function carregarContas() {
     + 'No GitHub, cadastre o segredo SICREDI_CONTAS.');
 }
 
-const VERSAO = 'v11.6 (volta a abrir Outro periodo no vendas; abre o campo Periodo na antecipacao)';
+const VERSAO = 'v11.7 (corrige acento em Ultimos no abridor da antecipacao)';
 const espera = (ms) => new Promise(r => setTimeout(r, ms));
 
 /* Digita LETRA POR LETRA e ainda reforca com os eventos nativos que os portais
@@ -263,8 +263,9 @@ async function definirPeriodo(page, conta, opt) {
      - Antecipacao: nao tem esse botao; abre pelo campo "Periodo"/preset. */
   const achouOutro = await clicar(page, [/outro per[ií]odo/i], { timeout: 6000 }).then(() => true).catch(() => false);
   if (!achouOutro) {
-    /* antecipacao: abre o popup clicando no campo "Periodo" ou no preset mostrado */
-    await clicar(page, [/^\s*per[ií]odo\s*$/i, /ultimos?\s*\d+\s*dias/i, /mes passado/i], { timeout: 6000 });
+    /* antecipacao: abre o popup clicando no preset mostrado ("Últimos 7 Dias")
+       ou no campo "Periodo". ATENCAO ao acento: "Últimos" tem Ú — use [uú]. */
+    await clicar(page, [/[uú]ltimos?\s*\d+\s*dias/i, /m[eê]s passado/i, /per[ií]odo/i], { timeout: 8000 });
   }
   await espera(1500);
   const [ini, fim] = await acharCamposData(page);
