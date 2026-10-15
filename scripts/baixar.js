@@ -55,7 +55,7 @@ function carregarContas() {
     + 'No GitHub, cadastre o segredo SICREDI_CONTAS.');
 }
 
-const VERSAO = 'v11.10 (antecipacao: so clica dentro do card Periodo; nunca no sininho de Notificacoes)';
+const VERSAO = 'v11.11 (antecipacao: clica no icone de calendario / borda direita do card Periodo)';
 const espera = (ms) => new Promise(r => setTimeout(r, ms));
 
 /* Digita LETRA POR LETRA e ainda reforca com os eventos nativos que os portais
@@ -270,27 +270,32 @@ async function popupPeriodoAberto(page) {
   return false;
 }
 async function abrirPeriodoAntecipacao(page) {
-  /* O site e React: um clique "de codigo" (element.click no DOM) as vezes nao e
-     escutado. Aqui uso CLIQUE DE MOUSE DE VERDADE (Playwright) SO em alvos DENTRO
-     do card "Período" (o rotulo, o valor "Últimos N Dias" e os pais deles) — nunca
-     em icones soltos da tela (o sininho de Notificacoes tem "icon" no nome e nao
-     pode ser clicado). Depois de CADA clique, confiro se o popup abriu. */
-  const rotulo = page.getByText(/^\s*per[ií]odo\s*$/i).first();
-  const valor = page.getByText(/[uú]ltimos?\s*\d+\s*dias/i).first();
-  const alvos = [
-    () => rotulo.locator('xpath=..'),        // card (pai imediato do rotulo "Período")
-    () => rotulo.locator('xpath=../..'),     // card (um nivel acima)
-    () => rotulo.locator('xpath=../../..'),  // card (dois niveis acima)
-    () => valor.locator('xpath=..'),         // pai do valor "Últimos 7 Dias"
-    () => valor.locator('xpath=../..'),
-    () => rotulo,                            // o proprio rotulo "Período"
-    () => valor,                             // o proprio valor
+  /* Quem abre o popup e o ICONE DE CALENDARIO no canto direito do card "Período"
+     — nao o texto. Acho o CARD (menor elemento que tem "Período" E "Últimos N
+     Dias"), clico no icone de calendario dentro dele e, de reforco, na BORDA
+     DIREITA do card (onde o icone fica) pela posicao do mouse — assim acerto o
+     calendario sem depender de como o HTML foi montado. Tudo escopo DO CARD:
+     nunca toca no sininho de Notificacoes do topo. Confiro se o popup abriu a
+     cada tentativa. */
+  const card = page.locator('div')
+    .filter({ has: page.getByText(/^\s*per[ií]odo\s*$/i) })
+    .filter({ hasText: /[uú]ltimos?\s*\d+\s*dias|\d{2}\/\d{2}\/\d{4}/i })
+    .last();
+
+  const tentativas = [
+    // 1) o icone de calendario (svg/button/i) DENTRO do card
+    async () => { await card.locator('svg, button, i, [class*="calend" i]').last().click({ timeout: 3000 }); },
+    // 2) a borda direita do card, onde o icone fica (posicao do mouse)
+    async () => {
+      const b = await card.boundingBox();
+      if (!b) throw new Error('sem box');
+      await page.mouse.click(b.x + b.width - 18, b.y + b.height / 2);
+    },
+    // 3) o card inteiro (centro)
+    async () => { await card.click({ timeout: 3000 }); },
   ];
-  for (const fazAlvo of alvos) {
-    let el;
-    try { el = fazAlvo(); } catch { continue; }
-    if (!(await el.isVisible({ timeout: 1000 }).catch(() => false))) continue;
-    try { await el.click({ timeout: 3000 }); } catch { continue; }
+  for (const faz of tentativas) {
+    try { await faz(); } catch { continue; }
     await espera(900);
     if (await popupPeriodoAberto(page)) return true;
   }
