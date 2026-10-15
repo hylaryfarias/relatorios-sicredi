@@ -55,7 +55,7 @@ function carregarContas() {
     + 'No GitHub, cadastre o segredo SICREDI_CONTAS.');
 }
 
-const VERSAO = 'v11.18 (antecipacao: abre o icone por todos os jeitos — mouse, teclado Enter, hover)';
+const VERSAO = 'v11.19 (vendas/antecipacao decididos por quem chama; Aplicar tolerante a rotulo)';
 const espera = (ms) => new Promise(r => setTimeout(r, ms));
 
 /* Digita LETRA POR LETRA e ainda reforca com os eventos nativos que os portais
@@ -401,15 +401,16 @@ async function esperarHumanoAbrirPeriodo(page, loja) {
   }
   return false;
 }
-async function definirPeriodo(page, conta, opt) {
-  /* Abre o seletor de periodo ANTES de preencher (sem abrir, os campos De/Ate
-     ficam escondidos atras de um overlay e o clique nao pega). Duas telas:
-     - Vendas: botao "Outro periodo" revela os campos.
-     - Antecipacao: nao tem esse botao; abre o card "Período". */
-  const achouOutro = await clicar(page, [/outro per[ií]odo/i], { timeout: 6000 }).then(() => true).catch(() => false);
+/* Clica no "Aplicar" do seletor de periodo, tolerante a variacoes de rotulo. */
+async function aplicarPeriodo(page) {
+  await clicar(page, [/^\s*aplicar\s*$/i, /aplicar per[ií]odo/i, /aplicar/i, /^\s*confirmar\s*$/i], { timeout: 8000 });
+}
+/* tipo: 'vendas' (tem botao "Outro período") ou 'antecipacao' (abre pelo icone
+   de calendario). Decidido por QUEM chama — nao por adivinhacao de tela. */
+async function definirPeriodo(page, conta, opt, tipo = 'vendas') {
+  let ini, fim;
 
-  // ===== ANTECIPACAO (nao tem "Outro período") =====
-  if (!achouOutro) {
+  if (tipo === 'antecipacao') {
     let abriu = await abrirPeriodoAntecipacao(page);
     if (!abriu) { await espera(1000); abriu = await abrirPeriodoAntecipacao(page); }
     if (!abriu) {
@@ -417,27 +418,17 @@ async function definirPeriodo(page, conta, opt) {
       throw new Error('nao abriu o tooltip de periodo da antecipacao');
     }
     await espera(800);
-    // os campos tem id terminando em FilterDateInit/FilterDateEnd. O preencher
-    // tem modo a prova de overlay (seta pelo motor do calendario), entao mesmo
-    // que o rotulo esteja na frente, a data entra.
-    const ini = page.locator('input[id$="FilterDateInit"]').first();
-    const fim = page.locator('input[id$="FilterDateEnd"]').first();
-    await preencherData(ini, opt.deISO, opt.de);
-    await preencherData(fim, opt.ateISO, opt.ate);
-    try {
-      fs.mkdirSync(PASTA_ERROS, { recursive: true });
-      await page.screenshot({ path: path.join(PASTA_ERROS, `periodo_${limpo(conta.nome)}_${hoje()}.png`), fullPage: true });
-      const vi = await ini.inputValue().catch(() => '?'); const vf = await fim.inputValue().catch(() => '?');
-      console.log(`  ${conta.nome}: periodo preenchido -> inicial="${vi}" final="${vf}"`);
-    } catch { /* */ }
-    await clicar(page, [/aplicar/i], { timeout: 8000 });
-    await espera(2000);
-    return;
+    // campos com id terminando em FilterDateInit/FilterDateEnd. O preencher tem
+    // modo a prova de overlay (seta pelo motor do calendario).
+    ini = page.locator('input[id$="FilterDateInit"]').first();
+    fim = page.locator('input[id$="FilterDateEnd"]').first();
+  } else {
+    // VENDAS: o botao "Outro período" revela os campos.
+    await clicar(page, [/outro per[ií]odo/i], { timeout: 8000 }).catch(() => {});
+    await espera(1500);
+    [ini, fim] = await acharCamposData(page);
   }
 
-  // ===== VENDAS (clicou em "Outro período") =====
-  await espera(1500);
-  const [ini, fim] = await acharCamposData(page);
   await preencherData(ini, opt.deISO, opt.de);
   await preencherData(fim, opt.ateISO, opt.ate);
   /* print de diagnostico ANTES de aplicar, para conferir se as datas entraram */
@@ -447,7 +438,7 @@ async function definirPeriodo(page, conta, opt) {
     const vi = await ini.inputValue().catch(() => '?'); const vf = await fim.inputValue().catch(() => '?');
     console.log(`  ${conta.nome}: periodo preenchido -> inicial="${vi}" final="${vf}"`);
   } catch { /* */ }
-  await clicar(page, [/aplicar/i], { timeout: 8000 });
+  await aplicarPeriodo(page);
   await espera(2000);
 }
 
@@ -465,7 +456,7 @@ async function processarConta(browser, conta, opt = {}) {
     await espera(1500);
     await clicar(page, [/relat[oó]rio de vendas/i], { timeout: 8000 }).catch(() => {});
     await espera(1500);
-    if (periodoCustom) await definirPeriodo(page, conta, opt);
+    if (periodoCustom) await definirPeriodo(page, conta, opt, 'vendas');
     const sufixo = periodoCustom ? `_${opt.de.replace(/\//g, '')}-${opt.ate.replace(/\//g, '')}` : '';
     feitos.push(await baixar(page, conta, {
       titulo: periodoCustom ? `Vendas (${opt.de} a ${opt.ate}, simplificado)` : 'Vendas (7 dias, simplificado)',
@@ -495,7 +486,7 @@ async function processarConta(browser, conta, opt = {}) {
            A tela de antecipacao pode ter o seletor DIFERENTE do vendas; se o periodo
            por datas nao for aceito, NAO trava — baixa em 7 dias e avisa. */
         if (periodoCustom) {
-          try { await definirPeriodo(page, conta, opt); }
+          try { await definirPeriodo(page, conta, opt, 'antecipacao'); }
           catch (e) {
             try {
               fs.mkdirSync(PASTA_ERROS, { recursive: true });
