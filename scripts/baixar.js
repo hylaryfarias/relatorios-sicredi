@@ -55,7 +55,7 @@ function carregarContas() {
     + 'No GitHub, cadastre o segredo SICREDI_CONTAS.');
 }
 
-const VERSAO = 'v11.21 (antecipacao: clica no Aplicar exato — btn-apply / generic-calendar-button-aplicar)';
+const VERSAO = 'v11.22 (antecipacao: SELECIONA o periodo clicando os dias no calendario, nao digitando)';
 const espera = (ms) => new Promise(r => setTimeout(r, ms));
 
 /* Digita LETRA POR LETRA e ainda reforca com os eventos nativos que os portais
@@ -425,11 +425,46 @@ async function aplicarPeriodo(page) {
   await dumpPaginaCompleta(page);
   throw new Error('nao achei o botao Aplicar do periodo');
 }
+/* -------- selecao de dia no calendario flatpickr (jeito que o motor respeita) --
+   Digitar no campo NAO muda a selecao interna do flatpickr; o Aplicar usa a
+   selecao do calendario. Entao a gente CLICA no dia certo. aria-label e tipo
+   "Outubro 1, 2026" (dia sem zero a esquerda). */
+const MESES_PT = ['Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho',
+  'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'];
+function ariaDia(br) {
+  const [d, m, y] = String(br).split('/').map(n => parseInt(n, 10));
+  return `${MESES_PT[m - 1]} ${d}, ${y}`;
+}
+/* navega o calendario (setas prev/next) ate o mes/ano do 'br' aparecer */
+async function navegarCalendario(page, br) {
+  const [, m, y] = String(br).split('/').map(n => parseInt(n, 10));
+  const alvo = y * 12 + (m - 1);
+  for (let i = 0; i < 48; i++) {
+    const atual = await page.evaluate(() => {
+      const cal = document.querySelector('.flatpickr-calendar.open') || document.querySelector('.flatpickr-calendar');
+      if (!cal) return null;
+      const sel = cal.querySelector('.flatpickr-monthDropdown-months');
+      const ano = cal.querySelector('input.cur-year');
+      if (!sel || !ano) return null;
+      return parseInt(ano.value, 10) * 12 + sel.selectedIndex;
+    }).catch(() => null);
+    if (atual === null || atual === alvo) return;
+    const btn = atual < alvo ? '.flatpickr-calendar .flatpickr-next-month' : '.flatpickr-calendar .flatpickr-prev-month';
+    await page.locator(btn).first().click({ timeout: 2000 }).catch(() => {});
+    await espera(250);
+  }
+}
+async function clicarDiaCalendario(page, br) {
+  await navegarCalendario(page, br);
+  const lbl = ariaDia(br);
+  // o dia do MES atual (nao os dias cinza de outro mes), e habilitado
+  const dia = page.locator(`.flatpickr-day[aria-label="${lbl}"]:not(.prevMonthDay):not(.nextMonthDay):not(.flatpickr-disabled)`).first();
+  await dia.click({ timeout: 5000 });
+  await espera(500);
+}
 /* tipo: 'vendas' (tem botao "Outro período") ou 'antecipacao' (abre pelo icone
    de calendario). Decidido por QUEM chama — nao por adivinhacao de tela. */
 async function definirPeriodo(page, conta, opt, tipo = 'vendas') {
-  let ini, fim;
-
   if (tipo === 'antecipacao') {
     let abriu = await abrirPeriodoAntecipacao(page);
     if (!abriu) { await espera(1000); abriu = await abrirPeriodoAntecipacao(page); }
@@ -438,20 +473,28 @@ async function definirPeriodo(page, conta, opt, tipo = 'vendas') {
       throw new Error('nao abriu o tooltip de periodo da antecipacao');
     }
     await espera(800);
-    // campos com id terminando em FilterDateInit/FilterDateEnd. O preencher tem
-    // modo a prova de overlay (seta pelo motor do calendario).
-    ini = page.locator('input[id$="FilterDateInit"]').first();
-    fim = page.locator('input[id$="FilterDateEnd"]').first();
-  } else {
-    // VENDAS: o botao "Outro período" revela os campos.
-    await clicar(page, [/outro per[ií]odo/i], { timeout: 8000 }).catch(() => {});
-    await espera(1500);
-    [ini, fim] = await acharCamposData(page);
+    // CLICAR os dias no calendario (range): inicio e depois fim. So isso muda a
+    // selecao interna do flatpickr que o Aplicar usa.
+    await clicarDiaCalendario(page, opt.de);
+    await clicarDiaCalendario(page, opt.ate);
+    try {
+      fs.mkdirSync(PASTA_ERROS, { recursive: true });
+      await page.screenshot({ path: path.join(PASTA_ERROS, `periodo_${limpo(conta.nome)}_${hoje()}.png`), fullPage: true });
+      const vi = await page.locator('input[id$="FilterDateInit"]').first().inputValue().catch(() => '?');
+      const vf = await page.locator('input[id$="FilterDateEnd"]').first().inputValue().catch(() => '?');
+      console.log(`  ${conta.nome}: periodo (antecipacao) selecionado no calendario -> inicial="${vi}" final="${vf}"`);
+    } catch { /* */ }
+    await aplicarPeriodo(page);
+    await espera(2000);
+    return;
   }
 
+  // ===== VENDAS: o botao "Outro período" revela os campos (input type=date). =====
+  await clicar(page, [/outro per[ií]odo/i], { timeout: 8000 }).catch(() => {});
+  await espera(1500);
+  const [ini, fim] = await acharCamposData(page);
   await preencherData(ini, opt.deISO, opt.de);
   await preencherData(fim, opt.ateISO, opt.ate);
-  /* print de diagnostico ANTES de aplicar, para conferir se as datas entraram */
   try {
     fs.mkdirSync(PASTA_ERROS, { recursive: true });
     await page.screenshot({ path: path.join(PASTA_ERROS, `periodo_${limpo(conta.nome)}_${hoje()}.png`), fullPage: true });
