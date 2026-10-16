@@ -55,7 +55,7 @@ function carregarContas() {
     + 'No GitHub, cadastre o segredo SICREDI_CONTAS.');
 }
 
-const VERSAO = 'v11.25 (antecipacao: desliga o card da frente pra o clique real cair no dia do calendario)';
+const VERSAO = 'v11.26 (antecipacao: clique real no dia com card desligado+religado; detecta is-open)';
 const espera = (ms) => new Promise(r => setTimeout(r, ms));
 
 /* Digita LETRA POR LETRA e ainda reforca com os eventos nativos que os portais
@@ -295,14 +295,12 @@ async function acharCamposData(page) {
    fechado e so o preenche (campos + Aplicar) ao abrir. Entao "conteudo com
    filhos" e o sinal certeiro de que abriu. */
 async function popupPeriodoAberto(page) {
-  // sinal FORTE: o botao "Aplicar" so existe/aparece com o picker aberto.
-  if (await page.getByText(/^\s*aplicar\s*$/i).first().isVisible({ timeout: 400 }).catch(() => false)) return true;
-  // o calendario flatpickr fica visivel quando o picker abre
+  // sinal DEFINITIVO (visto no HTML): o tooltip ganha a classe osui-tooltip--is-open.
+  if (await page.locator('.osui-tooltip--is-open .flatpickr-calendar, .osui-tooltip.custom-range-picker.osui-tooltip--is-open').count().catch(() => 0) >= 1) return true;
+  // reforcos
+  if (await page.getByText(/^\s*aplicar\s*$/i).first().isVisible({ timeout: 300 }).catch(() => false)) return true;
   if (await page.locator('.flatpickr-calendar .flatpickr-day').first().isVisible({ timeout: 300 }).catch(() => false)) return true;
-  // ou um campo DENTRO do conteudo do tooltip (nao o campo de fundo, coberto).
-  const temCampo = await page.locator('.custom-range-picker .osui-tooltip__content input, [id$="-Content"][role="tooltip"] input')
-    .first().isVisible({ timeout: 300 }).catch(() => false);
-  return !!temCampo;
+  return false;
 }
 async function esperaPopup(page, ms = 5000) {
   const ate = Date.now() + ms;
@@ -460,21 +458,26 @@ async function clicarDiaCalendario(page, br) {
   await navegarCalendario(page, br);
   const lbl = ariaDia(br);
   // O card do periodo (.data-range-picker-btn) fica NA FRENTE do calendario e
-  // rouba o clique do dia ("intercepts pointer events"). Desligo o pointer-events
-  // do card e RELIGO so o calendario — assim o clique REAL (confiavel) cai no dia,
-  // que e o que o OutSystems aceita de verdade.
-  await page.evaluate(() => {
+  // rouba o clique do dia. Desligo o pointer-events do card SO durante o clique e
+  // RELIGO logo em seguida — senao o icone que abre o calendario (que fica dentro
+  // do card) fica desligado e a proxima tentativa nao abre (foi o que travou).
+  const desliga = () => page.evaluate(() => {
     document.querySelectorAll('.data-range-picker-btn, [id$="data_range_picker_btn"]').forEach(b => { b.style.pointerEvents = 'none'; });
     document.querySelectorAll('.flatpickr-calendar').forEach(c => { c.style.pointerEvents = 'auto'; });
   }).catch(() => {});
+  const religa = () => page.evaluate(() => {
+    document.querySelectorAll('.data-range-picker-btn, [id$="data_range_picker_btn"]').forEach(b => { b.style.pointerEvents = ''; });
+  }).catch(() => {});
+
+  await desliga();
   const dia = page.locator(`.flatpickr-day[aria-label="${lbl}"]:not(.prevMonthDay):not(.nextMonthDay):not(.flatpickr-disabled)`).first();
   try {
-    await dia.click({ timeout: 4000 });
+    await dia.click({ timeout: 3500 });
   } catch {
-    // reforco: dispara os eventos de mouse direto no dia
     await dia.evaluate(el => { for (const t of ['mousedown', 'mouseup', 'click']) el.dispatchEvent(new MouseEvent(t, { bubbles: true, cancelable: true, view: window })); }).catch(() => {});
   }
-  await espera(500);
+  await religa();   // IMPORTANTE: religa o card pra nao travar o abrir na proxima
+  await espera(400);
 }
 /* Seta a faixa [de, ate] direto na instancia do flatpickr (modo range), que e o
    que o Aplicar usa. Procura a instancia em qualquer elemento (._flatpickr). */
@@ -519,7 +522,7 @@ async function definirPeriodo(page, conta, opt, tipo = 'vendas') {
        card mostra as datas pedidas; senao tenta de novo (ate 3x) e, se nao bater,
        NAO baixa (lanca erro) para nunca salvar arquivo com periodo errado. */
     let aplicado = false;
-    for (let tentativa = 1; tentativa <= 3 && !aplicado; tentativa++) {
+    for (let tentativa = 1; tentativa <= 2 && !aplicado; tentativa++) {
       let abriu = await abrirPeriodoAntecipacao(page);
       if (!abriu) { await espera(1000); abriu = await abrirPeriodoAntecipacao(page); }
       if (!abriu) { await dumpPaginaCompleta(page); throw new Error('nao abriu o tooltip de periodo da antecipacao'); }
