@@ -55,7 +55,7 @@ function carregarContas() {
     + 'No GitHub, cadastre o segredo SICREDI_CONTAS.');
 }
 
-const VERSAO = 'v11.36 (antecipacao: mouse humano — hover no icone antes de clicar)';
+const VERSAO = 'v11.37 (antecipacao: espera a tela carregar DE VERDADE (valores em R$) antes de clicar)';
 const espera = (ms) => new Promise(r => setTimeout(r, ms));
 
 /* Corre uma promessa contra um relogio: se passar de `ms`, rejeita com timeout.
@@ -341,14 +341,17 @@ async function abrirPeriodoAntecipacao(page) {
      ALTERNA a cada clique — se eu clicar varias vezes rapido, abro e FECHO. Entao:
      UM metodo por vez, e depois ESPERO com paciencia (ate 6s) o tooltip abrir
      (classe osui-tooltip--is-open), sem clicar por cima. */
-  await page.waitForLoadState('networkidle', { timeout: 4000 }).catch(() => {});
-  // ESPERA O RELATORIO CARREGAR: o handler do icone do calendario so passa a
-  // funcionar depois que os valores da tela aparecem (lojas pesadas, ex. FUSI,
-  // demoram — clicar antes disso nao faz nada).
-  await page.getByText(/valor bruto das vendas/i).first().waitFor({ state: 'visible', timeout: 15000 }).catch(() => {});
-  await page.locator('[data-testid="generic-calendar-icon-calendar"]').first()
-    .waitFor({ state: 'visible', timeout: 10000 }).catch(() => {});
-  await espera(1500); // deixa o componente do calendario terminar de inicializar
+  /* ESPERA A TELA CARREGAR DE VERDADE (FUSI e lenta; clicar cedo nao faz nada).
+     Varios sinais, com folga: fim das requisicoes, o card de periodo renderizado,
+     e um VALOR em R$ visivel (so aparece quando o relatorio carregou). */
+  console.log('    (esperando a tela da antecipacao carregar...)');
+  await page.waitForLoadState('networkidle', { timeout: 12000 }).catch(() => {});
+  await page.locator('[data-testid="generic-calendar-periodo-calendar"]').first()
+    .waitFor({ state: 'visible', timeout: 15000 }).catch(() => {});
+  await page.locator('[data-testid="calendar-trigger-icon"]').first()
+    .waitFor({ state: 'visible', timeout: 12000 }).catch(() => {});
+  await page.getByText(/R\$\s*\d/).first().waitFor({ state: 'visible', timeout: 15000 }).catch(() => {});
+  await espera(2500); // deixa o componente do calendario terminar de inicializar
   console.log('    (abrindo o calendario da antecipacao...)');
   if (await popupPeriodoAberto(page)) return true;
 
