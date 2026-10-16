@@ -55,7 +55,7 @@ function carregarContas() {
     + 'No GitHub, cadastre o segredo SICREDI_CONTAS.');
 }
 
-const VERSAO = 'v11.29 (antecipacao: abridor paciente mas com tempo limitado + logs de progresso)';
+const VERSAO = 'v11.30 (antecipacao: clique no dia FORCADO — clique real que o OutSystems registra)';
 const espera = (ms) => new Promise(r => setTimeout(r, ms));
 
 /* Digita LETRA POR LETRA e ainda reforca com os eventos nativos que os portais
@@ -480,9 +480,14 @@ async function clicarDiaCalendario(page, br) {
   }).catch(() => {});
 
   await desliga();
+  await espera(150); // deixa o pointer-events aplicar antes de clicar
   const dia = page.locator(`.flatpickr-day[aria-label="${lbl}"]:not(.prevMonthDay):not(.nextMonthDay):not(.flatpickr-disabled)`).first();
+  await dia.scrollIntoViewIfNeeded({ timeout: 2000 }).catch(() => {});
   try {
-    await dia.click({ timeout: 3500 });
+    // FORCE: pula a checagem de interceptacao do Playwright, mas o clique CONTINUA
+    // sendo um clique de mouse REAL (confiavel) — com o card desligado, cai no dia,
+    // e so assim o OutSystems registra a selecao.
+    await dia.click({ force: true, timeout: 3500 });
   } catch {
     await dia.evaluate(el => { for (const t of ['mousedown', 'mouseup', 'click']) el.dispatchEvent(new MouseEvent(t, { bubbles: true, cancelable: true, view: window })); }).catch(() => {});
   }
