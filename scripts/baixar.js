@@ -55,7 +55,7 @@ function carregarContas() {
     + 'No GitHub, cadastre o segredo SICREDI_CONTAS.');
 }
 
-const VERSAO = 'v11.32 (Aplicar com o card desligado — clique real cai no botao e o OutSystems commita)';
+const VERSAO = 'v11.33 (antecipacao: confere CADA passo e repete so o que faltou — dias e Aplicar)';
 const espera = (ms) => new Promise(r => setTimeout(r, ms));
 
 /* Corre uma promessa contra um relogio: se passar de `ms`, rejeita com timeout.
@@ -552,43 +552,49 @@ async function lerPeriodoAplicado(page) {
    de calendario). Decidido por QUEM chama — nao por adivinhacao de tela. */
 async function definirPeriodo(page, conta, opt, tipo = 'vendas') {
   if (tipo === 'antecipacao') {
-    /* O site (OutSystems) so atualiza o periodo "pra valer" com eventos de CLIQUE
-       REAL no calendario (igual a pessoa faz). Setar pelo motor so muda o texto e
-       o Exportar sai com o periodo antigo. Entao: abre, clica os dias (inicio e
-       fim), Aplica, e CONFERE no card o periodo que ficou. So prossegue quando o
-       card mostra as datas pedidas; senao tenta de novo (ate 3x) e, se nao bater,
-       NAO baixa (lanca erro) para nunca salvar arquivo com periodo errado. */
+    /* Portal instavel: as vezes o dia nao seleciona, as vezes o Aplicar nao cola.
+       Entao CONFERE cada passo e repete so o que faltou:
+       1) abre; 2) clica os dias e confere que os CAMPOS viraram de/ate (re-clica
+       ate 3x); 3) Aplica e confere o CARD (re-aplica ate 4x, reabrindo se fechou).
+       So baixa quando o card mostra o periodo pedido. */
+    const valInit = () => page.locator('input[id$="FilterDateInit"]').first().inputValue().catch(() => '');
+    const valEnd = () => page.locator('input[id$="FilterDateEnd"]').first().inputValue().catch(() => '');
+    const camposOk = async () => (await valInit()) === opt.de && (await valEnd()) === opt.ate;
+    const selecionar = async () => {
+      for (let s = 1; s <= 3 && !(await camposOk()); s++) {
+        try { await clicarDiaCalendario(page, opt.de); await clicarDiaCalendario(page, opt.ate); }
+        catch (e) { console.log(`  ${conta.nome}: clique nos dias falhou (${e.message})`); }
+        await espera(400);
+      }
+      return camposOk();
+    };
+
+    if (!(await abrirPeriodoAntecipacao(page))) { await dumpPaginaCompleta(page); throw new Error('nao abriu o calendario da antecipacao'); }
+    await espera(500);
+    if (!(await selecionar())) {
+      await dumpPaginaCompleta(page);
+      throw new Error(`os dias nao ficaram ${opt.de}-${opt.ate} (ficou ${await valInit()}-${await valEnd()})`);
+    }
+    console.log(`  ${conta.nome}: dias selecionados -> ${await valInit()} a ${await valEnd()}`);
+
     let aplicado = false;
-    for (let tentativa = 1; tentativa <= 2 && !aplicado; tentativa++) {
-      const abriu = await abrirPeriodoAntecipacao(page);
-      if (!abriu) {
-        console.log(`  ${conta.nome}: calendario nao abriu (tentativa ${tentativa}).`);
-        if (tentativa >= 2) { await dumpPaginaCompleta(page); throw new Error('nao abriu o tooltip de periodo da antecipacao'); }
-        await espera(800);
-        continue; // tenta de novo (reabre)
-      }
-      await espera(700);
-
-      // CLIQUE REAL nos dias (inicio e depois fim). setDate so de reforco se falhar.
-      try {
-        await clicarDiaCalendario(page, opt.de);
-        await clicarDiaCalendario(page, opt.ate);
-      } catch (e) {
-        console.log(`  ${conta.nome}: clique nos dias falhou (${e.message}); tentando pelo motor`);
-        await selecionarRangeFlatpickr(page, opt.de, opt.ate);
-      }
-      await espera(500);
+    for (let a = 1; a <= 4 && !aplicado; a++) {
       await aplicarPeriodo(page);
-      await espera(2500);
-
+      await espera(2200);
       const lbl = await lerPeriodoAplicado(page);
-      console.log(`  ${conta.nome}: periodo aplicado na tela (tentativa ${tentativa}) -> "${lbl}"`);
-      if (lbl.includes(opt.de) && lbl.includes(opt.ate)) aplicado = true;
+      if (lbl.includes(opt.de) && lbl.includes(opt.ate)) { aplicado = true; break; }
+      console.log(`  ${conta.nome}: Aplicar nao colou (card="${lbl}"), re-tentando ${a}/4`);
+      if (!(await popupPeriodoAberto(page))) {      // tooltip fechou: reabre e re-seleciona
+        if (!(await abrirPeriodoAntecipacao(page))) break;
+        await espera(400);
+        await selecionar();
+      }
     }
     try {
       fs.mkdirSync(PASTA_ERROS, { recursive: true });
       await page.screenshot({ path: path.join(PASTA_ERROS, `periodo_${limpo(conta.nome)}_${hoje()}.png`), fullPage: true });
     } catch { /* */ }
+    console.log(`  ${conta.nome}: periodo aplicado na tela -> "${await lerPeriodoAplicado(page)}"`);
     if (!aplicado) {
       await dumpPaginaCompleta(page);
       throw new Error(`o periodo aplicado nao ficou ${opt.de} a ${opt.ate} (nao vou baixar arquivo errado)`);
@@ -657,7 +663,7 @@ async function processarConta(browser, conta, opt = {}) {
            A tela de antecipacao pode ter o seletor DIFERENTE do vendas; se o periodo
            por datas nao for aceito, NAO trava — baixa em 7 dias e avisa. */
         if (periodoCustom) {
-          try { await comTimeout(definirPeriodo(page, conta, opt, 'antecipacao'), 55000, 'definir periodo antecipacao'); }
+          try { await comTimeout(definirPeriodo(page, conta, opt, 'antecipacao'), 90000, 'definir periodo antecipacao'); }
           catch (e) {
             try {
               fs.mkdirSync(PASTA_ERROS, { recursive: true });
