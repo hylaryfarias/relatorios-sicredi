@@ -55,7 +55,7 @@ function carregarContas() {
     + 'No GitHub, cadastre o segredo SICREDI_CONTAS.');
 }
 
-const VERSAO = 'v11.33 (antecipacao: confere CADA passo e repete so o que faltou — dias e Aplicar)';
+const VERSAO = 'v11.34 (antecipacao: abre com UM metodo por vez + espera paciente — nao abre-e-fecha)';
 const espera = (ms) => new Promise(r => setTimeout(r, ms));
 
 /* Corre uma promessa contra um relogio: se passar de `ms`, rejeita com timeout.
@@ -336,75 +336,45 @@ async function dumpPeriodoDOM(page) {
   } catch { /* */ }
 }
 async function abrirPeriodoAntecipacao(page) {
-  /* Mesmos campos do vendas; so muda o jeito de abrir. Aqui o calendario esta
-     num tooltip (osui-tooltip custom-range-picker) que abre ao acionar o ICONE
-     de calendario (<a> em [data-testid="generic-calendar-icon-calendar"], img
-     "calendar-trigger-icon") e so entao cria os campos. O tooltip ALTERNA a cada
-     clique, entao confiro "ja abriu?" ANTES de cada acao e paro assim que abre. */
-  // ESPERA o icone carregar (lojas que carregam mais devagar nao abriam porque o
-  // robo clicava antes do icone existir).
+  /* Mesmo calendario do vendas; so muda a abertura (no vendas e o botao "Outro
+     período", aqui e o ICONE de calendario que abre um osui-tooltip). Esse tooltip
+     ALTERNA a cada clique — se eu clicar varias vezes rapido, abro e FECHO. Entao:
+     UM metodo por vez, e depois ESPERO com paciencia (ate 6s) o tooltip abrir
+     (classe osui-tooltip--is-open), sem clicar por cima. */
   await page.waitForLoadState('networkidle', { timeout: 4000 }).catch(() => {});
   await page.locator('[data-testid="generic-calendar-icon-calendar"]').first()
     .waitFor({ state: 'visible', timeout: 10000 }).catch(() => {});
   console.log('    (abrindo o calendario da antecipacao...)');
-  const acoes = [
-    // 0) clique FISICO de mouse na coordenada do centro do icone (trusted, igual
-    //    ao da pessoa) — e o que a imagem do icone (circulada) mostra.
-    async () => {
-      const b = await page.locator('[data-testid="generic-calendar-icon-calendar"]').first().boundingBox();
-      if (!b) throw new Error('sem box do icone');
-      await page.mouse.click(b.x + b.width / 2, b.y + b.height / 2);
-    },
-    // 0b) TECLADO: focar o link do icone e apertar Enter/Espaco — jeito mais
-    //     confiavel de acionar o handler de um <a>, sem depender de overlay.
-    async () => {
-      const a = page.locator('[data-testid="generic-calendar-icon-calendar"] a').first();
-      await a.focus({ timeout: 2000 });
-      await a.press('Enter');
-    },
-    async () => {
-      const a = page.locator('[data-testid="generic-calendar-icon-calendar"] a').first();
-      await a.focus({ timeout: 2000 });
-      await a.press(' ');
-    },
-    // 0c) HOVER e segura (caso o tooltip abra por passar o mouse)
-    async () => {
-      await page.locator('[data-testid="calendar-trigger-icon"]').first().hover({ timeout: 2000, force: true });
-      await espera(700);
-    },
-    // 1) eventos de mouse via JS no link do icone (o que a OutSystems escuta) —
-    //    nao depende de tamanho nem de overlay.
-    async () => page.evaluate(() => {
-      const t = document.querySelector('[data-testid="generic-calendar-icon-calendar"] a')
-             || document.querySelector('[data-testid="calendar-trigger-icon"]')
-             || document.querySelector('[data-testid="generic-calendar-icon-calendar"]');
-      if (!t) return;
-      try { t.scrollIntoView({ block: 'center' }); } catch { /* */ }
-      for (const type of ['mouseenter', 'mouseover', 'mousedown', 'mouseup', 'click']) {
-        t.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window }));
-      }
-    }),
-    // 2) clique real na imagem do calendario
+  if (await popupPeriodoAberto(page)) return true;
+
+  const metodos = [
+    // 1) clique real na imagem do calendario (o gatilho visual, igual a pessoa)
     async () => page.locator('[data-testid="calendar-trigger-icon"]').first().click({ timeout: 3000 }),
-    // 3) hover + clique forcado no link do icone
-    async () => {
-      const a = page.locator('[data-testid="generic-calendar-icon-calendar"] a').first();
-      await a.hover({ timeout: 2000 }).catch(() => {});
-      await a.click({ timeout: 3000, force: true });
-    },
-    // 4) clique forcado no container do icone
+    // 2) teclado: focar o link do icone e Enter (aciona o handler do <a>)
+    async () => { const a = page.locator('[data-testid="generic-calendar-icon-calendar"] a').first(); await a.focus({ timeout: 2000 }); await a.press('Enter'); },
+    // 3) API da propria OutSystems (abre o tooltip pelo id) + eventos de mouse via JS
+    async () => page.evaluate(() => {
+      const w = document.querySelector('.osui-tooltip.custom-range-picker');
+      try {
+        const O = window.OutSystems;
+        const api = (O && O.OSUI && O.OSUI.Patterns && O.OSUI.Patterns.TooltipAPI)
+                 || (O && O.OSUI && O.OSUI.patterns && O.OSUI.patterns.TooltipAPI);
+        if (api && api.Open && w) { try { api.Open(w.id); } catch { /* */ } try { api.Open(w.getAttribute('name')); } catch { /* */ } }
+      } catch { /* */ }
+      const t = document.querySelector('[data-testid="generic-calendar-icon-calendar"] a') || document.querySelector('[data-testid="calendar-trigger-icon"]');
+      if (t) { try { t.scrollIntoView({ block: 'center' }); } catch { /* */ } for (const e of ['mouseenter', 'mouseover', 'mousedown', 'mouseup', 'click']) t.dispatchEvent(new MouseEvent(e, { bubbles: true, cancelable: true, view: window })); }
+    }),
+    // 4) clique fisico na coordenada do icone + clique forcado
+    async () => { const b = await page.locator('[data-testid="generic-calendar-icon-calendar"]').first().boundingBox(); if (b) await page.mouse.click(b.x + b.width / 2, b.y + b.height / 2); },
     async () => page.locator('[data-testid="generic-calendar-icon-calendar"]').first().click({ timeout: 3000, force: true }),
   ];
-  // insiste nas acoes em DUAS voltas (timing varia por loja), confirmando que
-  // abriu de verdade (is-open estavel) antes de seguir. Tempo total limitado.
-  for (let volta = 0; volta < 2; volta++) {
-    for (const faz of acoes) {
-      if (await popupPeriodoAberto(page)) { await espera(300); if (await popupPeriodoAberto(page)) return true; }
-      try { await faz(); } catch { /* tenta a proxima */ }
-      if (await esperaPopup(page, 2200)) { await espera(300); if (await popupPeriodoAberto(page)) return true; }
-    }
+  for (const faz of metodos) {
+    if (await popupPeriodoAberto(page)) return true;
+    try { await faz(); } catch { /* tenta o proximo */ }
+    // ESPERA PACIENTE (ate 6s), sem clicar de novo — evita abrir e fechar
+    if (await esperaPopup(page, 6000)) { await espera(300); if (await popupPeriodoAberto(page)) return true; }
   }
-  await dumpPeriodoDOM(page); // se nenhum abriu, guarda o HTML pra eu analisar
+  await dumpPeriodoDOM(page);
   return false;
 }
 /* Rede de seguranca: se o robo nao abrir o calendario da antecipacao sozinho,
