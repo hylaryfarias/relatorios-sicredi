@@ -55,7 +55,7 @@ function carregarContas() {
     + 'No GitHub, cadastre o segredo SICREDI_CONTAS.');
 }
 
-const VERSAO = 'v11.31 (nunca congela: tempo limite em tudo; desiste da loja em ~55s e segue)';
+const VERSAO = 'v11.32 (Aplicar com o card desligado — clique real cai no botao e o OutSystems commita)';
 const espera = (ms) => new Promise(r => setTimeout(r, ms));
 
 /* Corre uma promessa contra um relogio: se passar de `ms`, rejeita com timeout.
@@ -426,19 +426,32 @@ async function esperarHumanoAbrirPeriodo(page, loja) {
    por clique normal, aciono o clique no proprio motor (ignora overlay). */
 async function aplicarPeriodo(page) {
   const btn = page.locator('[data-testid="generic-calendar-button-aplicar"], button.btn-apply').first();
-  // 1) clique normal (evento confiavel)
-  try { await btn.waitFor({ state: 'visible', timeout: 5000 }); await btn.click({ timeout: 4000 }); return; } catch { /* */ }
-  // 2) clique forcado (ignora algo na frente)
-  try { await btn.click({ timeout: 3000, force: true }); return; } catch { /* */ }
-  // 3) clique no proprio motor (ignora visibilidade/overlay)
-  const ok = await page.evaluate(() => {
-    const b = document.querySelector('[data-testid="generic-calendar-button-aplicar"]')
-           || document.querySelector('button.btn-apply');
+  // O card invisivel (.data-range-picker-btn) pode ficar NA FRENTE do botao
+  // Aplicar: um clique forcado "sem desligar" cai no card (nao no botao) e o
+  // OutSystems ignora. Entao desligo o card, clico FORCADO no Aplicar (clique
+  // real que cai no botao) e religo.
+  const desliga = () => page.evaluate(() => {
+    document.querySelectorAll('.data-range-picker-btn, [id$="data_range_picker_btn"]').forEach(b => { b.style.pointerEvents = 'none'; });
+    document.querySelectorAll('.flatpickr-calendar').forEach(c => { c.style.pointerEvents = 'auto'; });
+  }).catch(() => {});
+  const religa = () => page.evaluate(() => {
+    document.querySelectorAll('.data-range-picker-btn, [id$="data_range_picker_btn"]').forEach(b => { b.style.pointerEvents = ''; });
+  }).catch(() => {});
+
+  await btn.waitFor({ state: 'visible', timeout: 5000 }).catch(() => {});
+  await desliga();
+  await espera(150);
+  let ok = false;
+  try { await btn.click({ force: true, timeout: 4000 }); ok = true; } catch { /* */ }
+  await religa();
+  if (ok) return;
+  // ultimo recurso (menos confiavel): clique no motor e por texto
+  const okJs = await page.evaluate(() => {
+    const b = document.querySelector('[data-testid="generic-calendar-button-aplicar"]') || document.querySelector('button.btn-apply');
     if (b) { b.click(); return true; }
     return false;
   }).catch(() => false);
-  if (ok) return;
-  // 4) ultimo recurso: por texto
+  if (okJs) return;
   const porTexto = await clicar(page, [/^\s*aplicar\s*$/i, /aplicar/i], { timeout: 4000 }).then(() => true).catch(() => false);
   if (porTexto) return;
   await dumpPaginaCompleta(page);
