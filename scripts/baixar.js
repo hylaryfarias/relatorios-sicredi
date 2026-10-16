@@ -55,7 +55,7 @@ function carregarContas() {
     + 'No GitHub, cadastre o segredo SICREDI_CONTAS.');
 }
 
-const VERSAO = 'v11.27 (antecipacao: se o periodo nao aplicar, NAO baixa mislabeled — marca pra refazer)';
+const VERSAO = 'v11.28 (antecipacao: espera o icone carregar antes de abrir; falha rapido com aviso)';
 const espera = (ms) => new Promise(r => setTimeout(r, ms));
 
 /* Digita LETRA POR LETRA e ainda reforca com os eventos nativos que os portais
@@ -332,6 +332,12 @@ async function abrirPeriodoAntecipacao(page) {
      de calendario (<a> em [data-testid="generic-calendar-icon-calendar"], img
      "calendar-trigger-icon") e so entao cria os campos. O tooltip ALTERNA a cada
      clique, entao confiro "ja abriu?" ANTES de cada acao e paro assim que abre. */
+  // ESPERA o icone carregar (lojas que carregam mais devagar nao abriam porque o
+  // robo clicava antes do icone existir).
+  await page.waitForLoadState('networkidle', { timeout: 8000 }).catch(() => {});
+  await page.locator('[data-testid="generic-calendar-icon-calendar"]').first()
+    .waitFor({ state: 'visible', timeout: 12000 }).catch(() => {});
+  console.log('    (abrindo o calendario da antecipacao...)');
   const acoes = [
     // 0) clique FISICO de mouse na coordenada do centro do icone (trusted, igual
     //    ao da pessoa) — e o que a imagem do icone (circulada) mostra.
@@ -383,7 +389,7 @@ async function abrirPeriodoAntecipacao(page) {
   for (const faz of acoes) {
     if (await popupPeriodoAberto(page)) return true; // ja aberto? nao clica de novo (evita fechar)
     try { await faz(); } catch { /* tenta a proxima */ }
-    if (await esperaPopup(page, 4000)) return true;
+    if (await esperaPopup(page, 2800)) return true;
   }
   await dumpPeriodoDOM(page); // se nenhum abriu, guarda o HTML pra eu analisar
   return false;
