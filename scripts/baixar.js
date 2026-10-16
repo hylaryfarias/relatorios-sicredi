@@ -55,7 +55,7 @@ function carregarContas() {
     + 'No GitHub, cadastre o segredo SICREDI_CONTAS.');
 }
 
-const VERSAO = 'v11.24 (antecipacao: clica os dias de verdade + CONFERE o periodo no card antes de exportar)';
+const VERSAO = 'v11.25 (antecipacao: desliga o card da frente pra o clique real cair no dia do calendario)';
 const espera = (ms) => new Promise(r => setTimeout(r, ms));
 
 /* Digita LETRA POR LETRA e ainda reforca com os eventos nativos que os portais
@@ -459,9 +459,21 @@ async function navegarCalendario(page, br) {
 async function clicarDiaCalendario(page, br) {
   await navegarCalendario(page, br);
   const lbl = ariaDia(br);
-  // o dia do MES atual (nao os dias cinza de outro mes), e habilitado
+  // O card do periodo (.data-range-picker-btn) fica NA FRENTE do calendario e
+  // rouba o clique do dia ("intercepts pointer events"). Desligo o pointer-events
+  // do card e RELIGO so o calendario — assim o clique REAL (confiavel) cai no dia,
+  // que e o que o OutSystems aceita de verdade.
+  await page.evaluate(() => {
+    document.querySelectorAll('.data-range-picker-btn, [id$="data_range_picker_btn"]').forEach(b => { b.style.pointerEvents = 'none'; });
+    document.querySelectorAll('.flatpickr-calendar').forEach(c => { c.style.pointerEvents = 'auto'; });
+  }).catch(() => {});
   const dia = page.locator(`.flatpickr-day[aria-label="${lbl}"]:not(.prevMonthDay):not(.nextMonthDay):not(.flatpickr-disabled)`).first();
-  await dia.click({ timeout: 5000 });
+  try {
+    await dia.click({ timeout: 4000 });
+  } catch {
+    // reforco: dispara os eventos de mouse direto no dia
+    await dia.evaluate(el => { for (const t of ['mousedown', 'mouseup', 'click']) el.dispatchEvent(new MouseEvent(t, { bubbles: true, cancelable: true, view: window })); }).catch(() => {});
+  }
   await espera(500);
 }
 /* Seta a faixa [de, ate] direto na instancia do flatpickr (modo range), que e o
