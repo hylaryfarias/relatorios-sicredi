@@ -55,7 +55,7 @@ function carregarContas() {
     + 'No GitHub, cadastre o segredo SICREDI_CONTAS.');
 }
 
-const VERSAO = 'v11.22 (antecipacao: SELECIONA o periodo clicando os dias no calendario, nao digitando)';
+const VERSAO = 'v11.23 (antecipacao: seta a faixa no motor do flatpickr + confere antes de aplicar)';
 const espera = (ms) => new Promise(r => setTimeout(r, ms));
 
 /* Digita LETRA POR LETRA e ainda reforca com os eventos nativos que os portais
@@ -295,8 +295,10 @@ async function acharCamposData(page) {
    fechado e so o preenche (campos + Aplicar) ao abrir. Entao "conteudo com
    filhos" e o sinal certeiro de que abriu. */
 async function popupPeriodoAberto(page) {
-  // sinal FORTE: o botao "Aplicar" so existe com o tooltip aberto.
+  // sinal FORTE: o botao "Aplicar" so existe/aparece com o picker aberto.
   if (await page.getByText(/^\s*aplicar\s*$/i).first().isVisible({ timeout: 400 }).catch(() => false)) return true;
+  // o calendario flatpickr fica visivel quando o picker abre
+  if (await page.locator('.flatpickr-calendar .flatpickr-day').first().isVisible({ timeout: 300 }).catch(() => false)) return true;
   // ou um campo DENTRO do conteudo do tooltip (nao o campo de fundo, coberto).
   const temCampo = await page.locator('.custom-range-picker .osui-tooltip__content input, [id$="-Content"][role="tooltip"] input')
     .first().isVisible({ timeout: 300 }).catch(() => false);
@@ -462,6 +464,24 @@ async function clicarDiaCalendario(page, br) {
   await dia.click({ timeout: 5000 });
   await espera(500);
 }
+/* Seta a faixa [de, ate] direto na instancia do flatpickr (modo range), que e o
+   que o Aplicar usa. Procura a instancia em qualquer elemento (._flatpickr). */
+async function selecionarRangeFlatpickr(page, de, ate) {
+  return await page.evaluate(({ de, ate }) => {
+    const toDate = (s) => { const [d, m, y] = String(s).split('/').map(n => parseInt(n, 10)); return new Date(y, m - 1, d); };
+    const inicio = toDate(de), fim = toDate(ate);
+    let inst = null, instRange = null;
+    for (const el of document.querySelectorAll('*')) {
+      if (el._flatpickr) {
+        inst = el._flatpickr;
+        if (el._flatpickr.config && el._flatpickr.config.mode === 'range') { instRange = el._flatpickr; break; }
+      }
+    }
+    const fp = instRange || inst;
+    if (!fp || typeof fp.setDate !== 'function') return false;
+    try { fp.setDate([inicio, fim], true); return true; } catch { return false; }
+  }, { de, ate }).catch(() => false);
+}
 /* tipo: 'vendas' (tem botao "Outro período") ou 'antecipacao' (abre pelo icone
    de calendario). Decidido por QUEM chama — nao por adivinhacao de tela. */
 async function definirPeriodo(page, conta, opt, tipo = 'vendas') {
@@ -473,17 +493,36 @@ async function definirPeriodo(page, conta, opt, tipo = 'vendas') {
       throw new Error('nao abriu o tooltip de periodo da antecipacao');
     }
     await espera(800);
-    // CLICAR os dias no calendario (range): inicio e depois fim. So isso muda a
-    // selecao interna do flatpickr que o Aplicar usa.
-    await clicarDiaCalendario(page, opt.de);
-    await clicarDiaCalendario(page, opt.ate);
+
+    const valInit = () => page.locator('input[id$="FilterDateInit"]').first().inputValue().catch(() => '?');
+    const valEnd = () => page.locator('input[id$="FilterDateEnd"]').first().inputValue().catch(() => '?');
+
+    // 1) PRIMARIO: setar a faixa direto no motor do flatpickr (determinístico).
+    const okMotor = await selecionarRangeFlatpickr(page, opt.de, opt.ate);
+    await espera(600);
+    let vi = await valInit(), vf = await valEnd();
+
+    // 2) REFORCO: se nao bateu, clicar os dias no calendario.
+    if (vi !== opt.de || vf !== opt.ate) {
+      try {
+        await clicarDiaCalendario(page, opt.de);
+        await clicarDiaCalendario(page, opt.ate);
+      } catch (e) { console.log(`  ${conta.nome}: clique nos dias falhou (${e.message})`); }
+      await espera(400);
+      vi = await valInit(); vf = await valEnd();
+    }
+
     try {
       fs.mkdirSync(PASTA_ERROS, { recursive: true });
       await page.screenshot({ path: path.join(PASTA_ERROS, `periodo_${limpo(conta.nome)}_${hoje()}.png`), fullPage: true });
-      const vi = await page.locator('input[id$="FilterDateInit"]').first().inputValue().catch(() => '?');
-      const vf = await page.locator('input[id$="FilterDateEnd"]').first().inputValue().catch(() => '?');
-      console.log(`  ${conta.nome}: periodo (antecipacao) selecionado no calendario -> inicial="${vi}" final="${vf}"`);
     } catch { /* */ }
+    console.log(`  ${conta.nome}: periodo (antecipacao) -> inicial="${vi}" final="${vf}" (motor:${okMotor ? 'ok' : 'nao'})`);
+
+    // 3) CONFERE: so aplica se a faixa ficou certa; senao NAO baixa errado, avisa.
+    if (vi !== opt.de || vf !== opt.ate) {
+      await dumpPaginaCompleta(page);
+      throw new Error(`o calendario ficou em ${vi} a ${vf}, nao em ${opt.de} a ${opt.ate}`);
+    }
     await aplicarPeriodo(page);
     await espera(2000);
     return;
