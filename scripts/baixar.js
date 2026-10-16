@@ -55,7 +55,7 @@ function carregarContas() {
     + 'No GitHub, cadastre o segredo SICREDI_CONTAS.');
 }
 
-const VERSAO = 'v11.28 (antecipacao: espera o icone carregar antes de abrir; falha rapido com aviso)';
+const VERSAO = 'v11.29 (antecipacao: abridor paciente mas com tempo limitado + logs de progresso)';
 const espera = (ms) => new Promise(r => setTimeout(r, ms));
 
 /* Digita LETRA POR LETRA e ainda reforca com os eventos nativos que os portais
@@ -334,9 +334,9 @@ async function abrirPeriodoAntecipacao(page) {
      clique, entao confiro "ja abriu?" ANTES de cada acao e paro assim que abre. */
   // ESPERA o icone carregar (lojas que carregam mais devagar nao abriam porque o
   // robo clicava antes do icone existir).
-  await page.waitForLoadState('networkidle', { timeout: 8000 }).catch(() => {});
+  await page.waitForLoadState('networkidle', { timeout: 4000 }).catch(() => {});
   await page.locator('[data-testid="generic-calendar-icon-calendar"]').first()
-    .waitFor({ state: 'visible', timeout: 12000 }).catch(() => {});
+    .waitFor({ state: 'visible', timeout: 10000 }).catch(() => {});
   console.log('    (abrindo o calendario da antecipacao...)');
   const acoes = [
     // 0) clique FISICO de mouse na coordenada do centro do icone (trusted, igual
@@ -386,10 +386,14 @@ async function abrirPeriodoAntecipacao(page) {
     // 4) clique forcado no container do icone
     async () => page.locator('[data-testid="generic-calendar-icon-calendar"]').first().click({ timeout: 3000, force: true }),
   ];
-  for (const faz of acoes) {
-    if (await popupPeriodoAberto(page)) return true; // ja aberto? nao clica de novo (evita fechar)
-    try { await faz(); } catch { /* tenta a proxima */ }
-    if (await esperaPopup(page, 2800)) return true;
+  // insiste nas acoes em DUAS voltas (timing varia por loja), confirmando que
+  // abriu de verdade (is-open estavel) antes de seguir. Tempo total limitado.
+  for (let volta = 0; volta < 2; volta++) {
+    for (const faz of acoes) {
+      if (await popupPeriodoAberto(page)) { await espera(300); if (await popupPeriodoAberto(page)) return true; }
+      try { await faz(); } catch { /* tenta a proxima */ }
+      if (await esperaPopup(page, 2200)) { await espera(300); if (await popupPeriodoAberto(page)) return true; }
+    }
   }
   await dumpPeriodoDOM(page); // se nenhum abriu, guarda o HTML pra eu analisar
   return false;
@@ -529,9 +533,13 @@ async function definirPeriodo(page, conta, opt, tipo = 'vendas') {
        NAO baixa (lanca erro) para nunca salvar arquivo com periodo errado. */
     let aplicado = false;
     for (let tentativa = 1; tentativa <= 2 && !aplicado; tentativa++) {
-      let abriu = await abrirPeriodoAntecipacao(page);
-      if (!abriu) { await espera(1000); abriu = await abrirPeriodoAntecipacao(page); }
-      if (!abriu) { await dumpPaginaCompleta(page); throw new Error('nao abriu o tooltip de periodo da antecipacao'); }
+      const abriu = await abrirPeriodoAntecipacao(page);
+      if (!abriu) {
+        console.log(`  ${conta.nome}: calendario nao abriu (tentativa ${tentativa}).`);
+        if (tentativa >= 2) { await dumpPaginaCompleta(page); throw new Error('nao abriu o tooltip de periodo da antecipacao'); }
+        await espera(800);
+        continue; // tenta de novo (reabre)
+      }
       await espera(700);
 
       // CLIQUE REAL nos dias (inicio e depois fim). setDate so de reforco se falhar.
@@ -613,6 +621,7 @@ async function processarConta(browser, conta, opt = {}) {
     let faltouAntecip = false;
     for (let tentativa = 1; tentativa <= 2; tentativa++) {
       try {
+        console.log(`  ${conta.nome}: abrindo a tela de antecipacao... (tentativa ${tentativa})`);
         await clicar(page, ['Antecipação', /antecipa/i], { timeout: 15000 });
         await espera(2000);
         await clicar(page, [/relat[oó]rio de antecipa/i], { timeout: 12000 });
