@@ -55,8 +55,17 @@ function carregarContas() {
     + 'No GitHub, cadastre o segredo SICREDI_CONTAS.');
 }
 
-const VERSAO = 'v11.30 (antecipacao: clique no dia FORCADO — clique real que o OutSystems registra)';
+const VERSAO = 'v11.31 (nunca congela: tempo limite em tudo; desiste da loja em ~55s e segue)';
 const espera = (ms) => new Promise(r => setTimeout(r, ms));
+
+/* Corre uma promessa contra um relogio: se passar de `ms`, rejeita com timeout.
+   Serve pra blindar operacoes que podem travar numa pagina congelada do portal
+   (page.evaluate/page.content nao tem timeout proprio e penduram pra sempre). */
+function comTimeout(promise, ms, label = 'operacao') {
+  let t;
+  const relogio = new Promise((_, rej) => { t = setTimeout(() => rej(new Error(`timeout: ${label}`)), ms); });
+  return Promise.race([Promise.resolve(promise).finally(() => clearTimeout(t)), relogio]);
+}
 
 /* Digita LETRA POR LETRA e ainda reforca com os eventos nativos que os portais
  * feitos em framework (React/OutSystems) escutam para habilitar o botao. So
@@ -265,7 +274,7 @@ async function preencherData(campo, iso, br) {
    real). Guarda em erros/antecipacao_pagina_completa.html. */
 async function dumpPaginaCompleta(page) {
   try {
-    const html = await page.content();
+    const html = await comTimeout(page.content(), 6000, 'dumpPaginaCompleta');
     fs.mkdirSync(PASTA_ERROS, { recursive: true });
     fs.writeFileSync(path.join(PASTA_ERROS, 'antecipacao_pagina_completa.html'), html);
     console.log('  (salvei a pagina inteira em erros\\antecipacao_pagina_completa.html)');
@@ -314,13 +323,13 @@ async function esperaPopup(page, ms = 5000) {
    clique sem chutar). Guarda em erros/antecipacao_periodo_dom.html. */
 async function dumpPeriodoDOM(page) {
   try {
-    const html = await page.evaluate(() => {
+    const html = await comTimeout(page.evaluate(() => {
       const base = document.querySelector('[data-testid="generic-calendar-periodo-calendar"]')
         || document.querySelector('input[id$="FilterDateInit"]');
       let node = base;
       for (let i = 0; i < 7 && node && node.parentElement; i++) node = node.parentElement;
       return (node || document.body).outerHTML;
-    });
+    }), 6000, 'dumpPeriodoDOM');
     fs.mkdirSync(PASTA_ERROS, { recursive: true });
     fs.writeFileSync(path.join(PASTA_ERROS, 'antecipacao_periodo_dom.html'), html);
     console.log('  (salvei o HTML da area de periodo em erros\\antecipacao_periodo_dom.html)');
@@ -635,7 +644,7 @@ async function processarConta(browser, conta, opt = {}) {
            A tela de antecipacao pode ter o seletor DIFERENTE do vendas; se o periodo
            por datas nao for aceito, NAO trava — baixa em 7 dias e avisa. */
         if (periodoCustom) {
-          try { await definirPeriodo(page, conta, opt, 'antecipacao'); }
+          try { await comTimeout(definirPeriodo(page, conta, opt, 'antecipacao'), 55000, 'definir periodo antecipacao'); }
           catch (e) {
             try {
               fs.mkdirSync(PASTA_ERROS, { recursive: true });
