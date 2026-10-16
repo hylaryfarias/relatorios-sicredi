@@ -55,7 +55,7 @@ function carregarContas() {
     + 'No GitHub, cadastre o segredo SICREDI_CONTAS.');
 }
 
-const VERSAO = 'v11.35 (antecipacao: clica EXATO no centro da imagenzinha do icone + espera o relatorio carregar)';
+const VERSAO = 'v11.36 (antecipacao: mouse humano — hover no icone antes de clicar)';
 const espera = (ms) => new Promise(r => setTimeout(r, ms));
 
 /* Corre uma promessa contra um relogio: se passar de `ms`, rejeita com timeout.
@@ -352,20 +352,34 @@ async function abrirPeriodoAntecipacao(page) {
   console.log('    (abrindo o calendario da antecipacao...)');
   if (await popupPeriodoAberto(page)) return true;
 
+  const centroIcone = async () => {
+    const b = await page.locator('[data-testid="calendar-trigger-icon"]').first().boundingBox();
+    if (!b) throw new Error('sem box da imagem do icone');
+    return { x: b.x + b.width / 2, y: b.y + b.height / 2 };
+  };
   const metodos = [
-    // 1) clique no CENTRO EXATO da imagenzinha do calendario (o icone e pequeno;
-    //    tem que acertar EM CIMA dele — mirar no card maior erra).
+    // 1) MOUSE HUMANO: chega de fora, passa POR CIMA do icone (hover real) e clica
+    //    com pressionar-e-soltar. Esse calendario pode precisar do mouse em cima
+    //    antes do clique (o clique "teleportado" do robo nao dispara o hover).
     async () => {
-      const b = await page.locator('[data-testid="calendar-trigger-icon"]').first().boundingBox();
-      if (!b) throw new Error('sem box da imagem do icone');
-      await page.mouse.click(b.x + b.width / 2, b.y + b.height / 2);
+      const { x, y } = await centroIcone();
+      await page.mouse.move(x - 50, y - 50);
+      await espera(120);
+      await page.mouse.move(x, y, { steps: 8 }); // movimento real ate o icone
+      await espera(300);
+      await page.mouse.down(); await espera(80); await page.mouse.up();
     },
-    // 2) clique real na propria imagem (Playwright mira no centro dela)
+    // 2) hover (locator) + clique no centro exato da imagem
+    async () => {
+      await page.locator('[data-testid="calendar-trigger-icon"]').first().hover({ timeout: 2500 });
+      await espera(250);
+      const { x, y } = await centroIcone();
+      await page.mouse.click(x, y);
+    },
+    // 3) clique real na propria imagem (Playwright mira no centro dela)
     async () => page.locator('[data-testid="calendar-trigger-icon"]').first().click({ timeout: 3000 }),
-    // 3) teclado: focar o link do icone e Enter (aciona o handler do <a>)
+    // 4) teclado: focar o link do icone e Enter (aciona o handler do <a>)
     async () => { const a = page.locator('[data-testid="generic-calendar-icon-calendar"] a').first(); await a.focus({ timeout: 2000 }); await a.press('Enter'); },
-    // 4) clique forcado na imagem (ignora algo na frente, mas mira na imagem)
-    async () => page.locator('[data-testid="calendar-trigger-icon"]').first().click({ timeout: 3000, force: true }),
     // 5) API da propria OutSystems + eventos de mouse via JS no icone
     async () => page.evaluate(() => {
       const w = document.querySelector('.osui-tooltip.custom-range-picker');
@@ -382,8 +396,8 @@ async function abrirPeriodoAntecipacao(page) {
   for (const faz of metodos) {
     if (await popupPeriodoAberto(page)) return true;
     try { await faz(); } catch { /* tenta o proximo */ }
-    // ESPERA PACIENTE (ate 6s), sem clicar de novo — evita abrir e fechar
-    if (await esperaPopup(page, 6000)) { await espera(300); if (await popupPeriodoAberto(page)) return true; }
+    // ESPERA PACIENTE (ate 4s), sem clicar de novo — evita abrir e fechar
+    if (await esperaPopup(page, 4000)) { await espera(300); if (await popupPeriodoAberto(page)) return true; }
   }
   await dumpPeriodoDOM(page);
   return false;
