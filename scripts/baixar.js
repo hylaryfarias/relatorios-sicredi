@@ -55,7 +55,7 @@ function carregarContas() {
     + 'No GitHub, cadastre o segredo SICREDI_CONTAS.');
 }
 
-const VERSAO = 'v11.34 (antecipacao: abre com UM metodo por vez + espera paciente — nao abre-e-fecha)';
+const VERSAO = 'v11.35 (antecipacao: clica EXATO no centro da imagenzinha do icone + espera o relatorio carregar)';
 const espera = (ms) => new Promise(r => setTimeout(r, ms));
 
 /* Corre uma promessa contra um relogio: se passar de `ms`, rejeita com timeout.
@@ -342,17 +342,31 @@ async function abrirPeriodoAntecipacao(page) {
      UM metodo por vez, e depois ESPERO com paciencia (ate 6s) o tooltip abrir
      (classe osui-tooltip--is-open), sem clicar por cima. */
   await page.waitForLoadState('networkidle', { timeout: 4000 }).catch(() => {});
+  // ESPERA O RELATORIO CARREGAR: o handler do icone do calendario so passa a
+  // funcionar depois que os valores da tela aparecem (lojas pesadas, ex. FUSI,
+  // demoram — clicar antes disso nao faz nada).
+  await page.getByText(/valor bruto das vendas/i).first().waitFor({ state: 'visible', timeout: 15000 }).catch(() => {});
   await page.locator('[data-testid="generic-calendar-icon-calendar"]').first()
     .waitFor({ state: 'visible', timeout: 10000 }).catch(() => {});
+  await espera(1500); // deixa o componente do calendario terminar de inicializar
   console.log('    (abrindo o calendario da antecipacao...)');
   if (await popupPeriodoAberto(page)) return true;
 
   const metodos = [
-    // 1) clique real na imagem do calendario (o gatilho visual, igual a pessoa)
+    // 1) clique no CENTRO EXATO da imagenzinha do calendario (o icone e pequeno;
+    //    tem que acertar EM CIMA dele — mirar no card maior erra).
+    async () => {
+      const b = await page.locator('[data-testid="calendar-trigger-icon"]').first().boundingBox();
+      if (!b) throw new Error('sem box da imagem do icone');
+      await page.mouse.click(b.x + b.width / 2, b.y + b.height / 2);
+    },
+    // 2) clique real na propria imagem (Playwright mira no centro dela)
     async () => page.locator('[data-testid="calendar-trigger-icon"]').first().click({ timeout: 3000 }),
-    // 2) teclado: focar o link do icone e Enter (aciona o handler do <a>)
+    // 3) teclado: focar o link do icone e Enter (aciona o handler do <a>)
     async () => { const a = page.locator('[data-testid="generic-calendar-icon-calendar"] a').first(); await a.focus({ timeout: 2000 }); await a.press('Enter'); },
-    // 3) API da propria OutSystems (abre o tooltip pelo id) + eventos de mouse via JS
+    // 4) clique forcado na imagem (ignora algo na frente, mas mira na imagem)
+    async () => page.locator('[data-testid="calendar-trigger-icon"]').first().click({ timeout: 3000, force: true }),
+    // 5) API da propria OutSystems + eventos de mouse via JS no icone
     async () => page.evaluate(() => {
       const w = document.querySelector('.osui-tooltip.custom-range-picker');
       try {
@@ -361,12 +375,9 @@ async function abrirPeriodoAntecipacao(page) {
                  || (O && O.OSUI && O.OSUI.patterns && O.OSUI.patterns.TooltipAPI);
         if (api && api.Open && w) { try { api.Open(w.id); } catch { /* */ } try { api.Open(w.getAttribute('name')); } catch { /* */ } }
       } catch { /* */ }
-      const t = document.querySelector('[data-testid="generic-calendar-icon-calendar"] a') || document.querySelector('[data-testid="calendar-trigger-icon"]');
+      const t = document.querySelector('[data-testid="calendar-trigger-icon"]') || document.querySelector('[data-testid="generic-calendar-icon-calendar"] a');
       if (t) { try { t.scrollIntoView({ block: 'center' }); } catch { /* */ } for (const e of ['mouseenter', 'mouseover', 'mousedown', 'mouseup', 'click']) t.dispatchEvent(new MouseEvent(e, { bubbles: true, cancelable: true, view: window })); }
     }),
-    // 4) clique fisico na coordenada do icone + clique forcado
-    async () => { const b = await page.locator('[data-testid="generic-calendar-icon-calendar"]').first().boundingBox(); if (b) await page.mouse.click(b.x + b.width / 2, b.y + b.height / 2); },
-    async () => page.locator('[data-testid="generic-calendar-icon-calendar"]').first().click({ timeout: 3000, force: true }),
   ];
   for (const faz of metodos) {
     if (await popupPeriodoAberto(page)) return true;
