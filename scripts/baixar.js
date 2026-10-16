@@ -55,7 +55,7 @@ function carregarContas() {
     + 'No GitHub, cadastre o segredo SICREDI_CONTAS.');
 }
 
-const VERSAO = 'v11.26 (antecipacao: clique real no dia com card desligado+religado; detecta is-open)';
+const VERSAO = 'v11.27 (antecipacao: se o periodo nao aplicar, NAO baixa mislabeled — marca pra refazer)';
 const espera = (ms) => new Promise(r => setTimeout(r, ms));
 
 /* Digita LETRA POR LETRA e ainda reforca com os eventos nativos que os portais
@@ -621,8 +621,8 @@ async function processarConta(browser, conta, opt = {}) {
               fs.mkdirSync(PASTA_ERROS, { recursive: true });
               await page.screenshot({ path: path.join(PASTA_ERROS, `antecipacao_periodo_${limpo(conta.nome)}_${hoje()}.png`), fullPage: true });
             } catch { /* */ }
-            console.log(`  ${conta.nome}: a tela de ANTECIPACAO nao aceitou o periodo por datas (${e.message}) — salvei um print em erros\\antecipacao_periodo_... e baixei em "Ultimos 7 dias".`);
-            await clicar(page, [/ltimos 7 dias/i], { timeout: 8000 }).catch(() => {});
+            console.log(`  ${conta.nome}: a antecipacao NAO aceitou o periodo ${opt.de} a ${opt.ate} (${e.message}). NAO vou baixar com periodo errado — marcada para refazer.`);
+            throw e; // joga pro catch de fora: nao baixa arquivo mislabeled; marca faltouAntecip
           }
         } else await clicar(page, [/ltimos 7 dias/i], { timeout: 8000 });
         await espera(1500);
