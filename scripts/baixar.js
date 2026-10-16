@@ -55,7 +55,7 @@ function carregarContas() {
     + 'No GitHub, cadastre o segredo SICREDI_CONTAS.');
 }
 
-const VERSAO = 'v11.23 (antecipacao: seta a faixa no motor do flatpickr + confere antes de aplicar)';
+const VERSAO = 'v11.24 (antecipacao: clica os dias de verdade + CONFERE o periodo no card antes de exportar)';
 const espera = (ms) => new Promise(r => setTimeout(r, ms));
 
 /* Digita LETRA POR LETRA e ainda reforca com os eventos nativos que os portais
@@ -482,49 +482,61 @@ async function selecionarRangeFlatpickr(page, de, ate) {
     try { fp.setDate([inicio, fim], true); return true; } catch { return false; }
   }, { de, ate }).catch(() => false);
 }
+/* Le o periodo que ficou aplicado no card ("Período / 01/10/2026 - 07/10/2026"
+   ou "Últimos 7 Dias"). Serve pra CONFERIR antes de exportar. */
+async function lerPeriodoAplicado(page) {
+  const sels = [
+    '[data-testid="generic-calendar-periodo-calendar"]',
+    '[id$="data_range_picker_btn_labels_label"]',
+    '[id$="data_range_picker_btn_labels"]',
+  ];
+  for (const s of sels) {
+    const t = await page.locator(s).first().innerText({ timeout: 1500 }).catch(() => '');
+    if (t && t.trim()) return t.replace(/\s+/g, ' ').trim();
+  }
+  return '';
+}
 /* tipo: 'vendas' (tem botao "Outro período") ou 'antecipacao' (abre pelo icone
    de calendario). Decidido por QUEM chama — nao por adivinhacao de tela. */
 async function definirPeriodo(page, conta, opt, tipo = 'vendas') {
   if (tipo === 'antecipacao') {
-    let abriu = await abrirPeriodoAntecipacao(page);
-    if (!abriu) { await espera(1000); abriu = await abrirPeriodoAntecipacao(page); }
-    if (!abriu) {
-      await dumpPaginaCompleta(page);                 // guarda a pagina inteira pra eu acertar o auto-abrir
-      throw new Error('nao abriu o tooltip de periodo da antecipacao');
-    }
-    await espera(800);
+    /* O site (OutSystems) so atualiza o periodo "pra valer" com eventos de CLIQUE
+       REAL no calendario (igual a pessoa faz). Setar pelo motor so muda o texto e
+       o Exportar sai com o periodo antigo. Entao: abre, clica os dias (inicio e
+       fim), Aplica, e CONFERE no card o periodo que ficou. So prossegue quando o
+       card mostra as datas pedidas; senao tenta de novo (ate 3x) e, se nao bater,
+       NAO baixa (lanca erro) para nunca salvar arquivo com periodo errado. */
+    let aplicado = false;
+    for (let tentativa = 1; tentativa <= 3 && !aplicado; tentativa++) {
+      let abriu = await abrirPeriodoAntecipacao(page);
+      if (!abriu) { await espera(1000); abriu = await abrirPeriodoAntecipacao(page); }
+      if (!abriu) { await dumpPaginaCompleta(page); throw new Error('nao abriu o tooltip de periodo da antecipacao'); }
+      await espera(700);
 
-    const valInit = () => page.locator('input[id$="FilterDateInit"]').first().inputValue().catch(() => '?');
-    const valEnd = () => page.locator('input[id$="FilterDateEnd"]').first().inputValue().catch(() => '?');
-
-    // 1) PRIMARIO: setar a faixa direto no motor do flatpickr (determinístico).
-    const okMotor = await selecionarRangeFlatpickr(page, opt.de, opt.ate);
-    await espera(600);
-    let vi = await valInit(), vf = await valEnd();
-
-    // 2) REFORCO: se nao bateu, clicar os dias no calendario.
-    if (vi !== opt.de || vf !== opt.ate) {
+      // CLIQUE REAL nos dias (inicio e depois fim). setDate so de reforco se falhar.
       try {
         await clicarDiaCalendario(page, opt.de);
         await clicarDiaCalendario(page, opt.ate);
-      } catch (e) { console.log(`  ${conta.nome}: clique nos dias falhou (${e.message})`); }
-      await espera(400);
-      vi = await valInit(); vf = await valEnd();
-    }
+      } catch (e) {
+        console.log(`  ${conta.nome}: clique nos dias falhou (${e.message}); tentando pelo motor`);
+        await selecionarRangeFlatpickr(page, opt.de, opt.ate);
+      }
+      await espera(500);
+      await aplicarPeriodo(page);
+      await espera(2500);
 
+      const lbl = await lerPeriodoAplicado(page);
+      console.log(`  ${conta.nome}: periodo aplicado na tela (tentativa ${tentativa}) -> "${lbl}"`);
+      if (lbl.includes(opt.de) && lbl.includes(opt.ate)) aplicado = true;
+    }
     try {
       fs.mkdirSync(PASTA_ERROS, { recursive: true });
       await page.screenshot({ path: path.join(PASTA_ERROS, `periodo_${limpo(conta.nome)}_${hoje()}.png`), fullPage: true });
     } catch { /* */ }
-    console.log(`  ${conta.nome}: periodo (antecipacao) -> inicial="${vi}" final="${vf}" (motor:${okMotor ? 'ok' : 'nao'})`);
-
-    // 3) CONFERE: so aplica se a faixa ficou certa; senao NAO baixa errado, avisa.
-    if (vi !== opt.de || vf !== opt.ate) {
+    if (!aplicado) {
       await dumpPaginaCompleta(page);
-      throw new Error(`o calendario ficou em ${vi} a ${vf}, nao em ${opt.de} a ${opt.ate}`);
+      throw new Error(`o periodo aplicado nao ficou ${opt.de} a ${opt.ate} (nao vou baixar arquivo errado)`);
     }
-    await aplicarPeriodo(page);
-    await espera(2000);
     return;
   }
 
