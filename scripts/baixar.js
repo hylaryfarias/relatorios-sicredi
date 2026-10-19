@@ -55,7 +55,7 @@ function carregarContas() {
     + 'No GitHub, cadastre o segredo SICREDI_CONTAS.');
 }
 
-const VERSAO = 'v11.37 (antecipacao: espera a tela carregar DE VERDADE (valores em R$) antes de clicar)';
+const VERSAO = 'v11.38 (antecipacao: espera leve + 2 voltas de clique no icone — corrige timeout geral)';
 const espera = (ms) => new Promise(r => setTimeout(r, ms));
 
 /* Corre uma promessa contra um relogio: se passar de `ms`, rejeita com timeout.
@@ -341,18 +341,13 @@ async function abrirPeriodoAntecipacao(page) {
      ALTERNA a cada clique — se eu clicar varias vezes rapido, abro e FECHO. Entao:
      UM metodo por vez, e depois ESPERO com paciencia (ate 6s) o tooltip abrir
      (classe osui-tooltip--is-open), sem clicar por cima. */
-  /* ESPERA A TELA CARREGAR DE VERDADE (FUSI e lenta; clicar cedo nao faz nada).
-     Varios sinais, com folga: fim das requisicoes, o card de periodo renderizado,
-     e um VALOR em R$ visivel (so aparece quando o relatorio carregou). */
-  console.log('    (esperando a tela da antecipacao carregar...)');
-  await page.waitForLoadState('networkidle', { timeout: 12000 }).catch(() => {});
-  await page.locator('[data-testid="generic-calendar-periodo-calendar"]').first()
-    .waitFor({ state: 'visible', timeout: 15000 }).catch(() => {});
-  await page.locator('[data-testid="calendar-trigger-icon"]').first()
-    .waitFor({ state: 'visible', timeout: 12000 }).catch(() => {});
-  await page.getByText(/R\$\s*\d/).first().waitFor({ state: 'visible', timeout: 15000 }).catch(() => {});
-  await espera(2500); // deixa o componente do calendario terminar de inicializar
+  /* Espera LEVE (sem estourar tempo): fim das requisicoes e o icone visivel.
+     Esperas longas demais estouravam o limite e sobrava pouco pro clique. */
   console.log('    (abrindo o calendario da antecipacao...)');
+  await page.waitForLoadState('networkidle', { timeout: 6000 }).catch(() => {});
+  await page.locator('[data-testid="calendar-trigger-icon"]').first()
+    .waitFor({ state: 'visible', timeout: 10000 }).catch(() => {});
+  await espera(1800);
   if (await popupPeriodoAberto(page)) return true;
 
   const centroIcone = async () => {
@@ -396,11 +391,14 @@ async function abrirPeriodoAntecipacao(page) {
       if (t) { try { t.scrollIntoView({ block: 'center' }); } catch { /* */ } for (const e of ['mouseenter', 'mouseover', 'mousedown', 'mouseup', 'click']) t.dispatchEvent(new MouseEvent(e, { bubbles: true, cancelable: true, view: window })); }
     }),
   ];
-  for (const faz of metodos) {
-    if (await popupPeriodoAberto(page)) return true;
-    try { await faz(); } catch { /* tenta o proximo */ }
-    // ESPERA PACIENTE (ate 4s), sem clicar de novo — evita abrir e fechar
-    if (await esperaPopup(page, 4000)) { await espera(300); if (await popupPeriodoAberto(page)) return true; }
+  // DUAS voltas pelas formas de clicar (timing varia por loja), cada metodo
+  // seguido de espera paciente (3.5s) por is-open, sem clicar por cima.
+  for (let volta = 0; volta < 2; volta++) {
+    for (const faz of metodos) {
+      if (await popupPeriodoAberto(page)) return true;
+      try { await faz(); } catch { /* tenta o proximo */ }
+      if (await esperaPopup(page, 3500)) { await espera(300); if (await popupPeriodoAberto(page)) return true; }
+    }
   }
   await dumpPeriodoDOM(page);
   return false;
