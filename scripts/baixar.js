@@ -55,7 +55,7 @@ function carregarContas() {
     + 'No GitHub, cadastre o segredo SICREDI_CONTAS.');
 }
 
-const VERSAO = 'v11.41 (so relatorios DETALHADOS: vendas detalhado + antecipacao detalhado) + diagnostico abridor';
+const VERSAO = 'v11.42 (detecta abertura pela VISIBILIDADE real do calendario; blinda a selecao)';
 const espera = (ms) => new Promise(r => setTimeout(r, ms));
 
 /* Corre uma promessa contra um relogio: se passar de `ms`, rejeita com timeout.
@@ -304,12 +304,23 @@ async function acharCamposData(page) {
    fechado e so o preenche (campos + Aplicar) ao abrir. Entao "conteudo com
    filhos" e o sinal certeiro de que abriu. */
 async function popupPeriodoAberto(page) {
-  // sinal DEFINITIVO (visto no HTML): o tooltip ganha a classe osui-tooltip--is-open.
-  if (await page.locator('.osui-tooltip--is-open .flatpickr-calendar, .osui-tooltip.custom-range-picker.osui-tooltip--is-open').count().catch(() => 0) >= 1) return true;
-  // reforcos
-  if (await page.getByText(/^\s*aplicar\s*$/i).first().isVisible({ timeout: 300 }).catch(() => false)) return true;
-  if (await page.locator('.flatpickr-calendar .flatpickr-day').first().isVisible({ timeout: 300 }).catch(() => false)) return true;
-  return false;
+  /* O calendario e INLINE: os elementos ficam no HTML mesmo FECHADO, entao
+     checar "existe" engana. Checo a VISIBILIDADE REAL do tooltip: nao pode estar
+     display:none / visibility:hidden / opacity baixa, e precisa ter um box de
+     tamanho de calendario NA TELA, com o botao Aplicar e os dias dentro. */
+  return await comTimeout(page.evaluate(() => {
+    const cands = Array.from(document.querySelectorAll('.osui-tooltip.custom-range-picker, .flatpickr-calendar'));
+    for (const w of cands) {
+      const cs = getComputedStyle(w);
+      if (cs.display === 'none' || cs.visibility === 'hidden' || parseFloat(cs.opacity || '1') < 0.3) continue;
+      const r = w.getBoundingClientRect();
+      if (r.width < 80 || r.height < 80 || r.bottom <= 0 || r.top >= innerHeight) continue;
+      const btn = w.querySelector('.btn-apply, [data-testid="generic-calendar-button-aplicar"]') || document.querySelector('.btn-apply');
+      const dia = w.querySelector('.flatpickr-day:not(.flatpickr-disabled)');
+      if (btn && dia) return true;
+    }
+    return false;
+  }), 2000, 'popupPeriodoAberto').catch(() => false);
 }
 async function esperaPopup(page, ms = 5000) {
   const ate = Date.now() + ms;
@@ -426,13 +437,13 @@ async function aplicarPeriodo(page) {
   // Aplicar: um clique forcado "sem desligar" cai no card (nao no botao) e o
   // OutSystems ignora. Entao desligo o card, clico FORCADO no Aplicar (clique
   // real que cai no botao) e religo.
-  const desliga = () => page.evaluate(() => {
+  const desliga = () => comTimeout(page.evaluate(() => {
     document.querySelectorAll('.data-range-picker-btn, [id$="data_range_picker_btn"]').forEach(b => { b.style.pointerEvents = 'none'; });
     document.querySelectorAll('.flatpickr-calendar').forEach(c => { c.style.pointerEvents = 'auto'; });
-  }).catch(() => {});
-  const religa = () => page.evaluate(() => {
+  }), 2500, 'desliga card (aplicar)').catch(() => {});
+  const religa = () => comTimeout(page.evaluate(() => {
     document.querySelectorAll('.data-range-picker-btn, [id$="data_range_picker_btn"]').forEach(b => { b.style.pointerEvents = ''; });
-  }).catch(() => {});
+  }), 2500, 'religa card (aplicar)').catch(() => {});
 
   await btn.waitFor({ state: 'visible', timeout: 5000 }).catch(() => {});
   await desliga();
@@ -489,13 +500,13 @@ async function clicarDiaCalendario(page, br) {
   // rouba o clique do dia. Desligo o pointer-events do card SO durante o clique e
   // RELIGO logo em seguida — senao o icone que abre o calendario (que fica dentro
   // do card) fica desligado e a proxima tentativa nao abre (foi o que travou).
-  const desliga = () => page.evaluate(() => {
+  const desliga = () => comTimeout(page.evaluate(() => {
     document.querySelectorAll('.data-range-picker-btn, [id$="data_range_picker_btn"]').forEach(b => { b.style.pointerEvents = 'none'; });
     document.querySelectorAll('.flatpickr-calendar').forEach(c => { c.style.pointerEvents = 'auto'; });
-  }).catch(() => {});
-  const religa = () => page.evaluate(() => {
+  }), 2500, 'desliga card').catch(() => {});
+  const religa = () => comTimeout(page.evaluate(() => {
     document.querySelectorAll('.data-range-picker-btn, [id$="data_range_picker_btn"]').forEach(b => { b.style.pointerEvents = ''; });
-  }).catch(() => {});
+  }), 2500, 'religa card').catch(() => {});
 
   await desliga();
   await espera(150); // deixa o pointer-events aplicar antes de clicar
@@ -553,8 +564,8 @@ async function definirPeriodo(page, conta, opt, tipo = 'vendas') {
        1) abre; 2) clica os dias e confere que os CAMPOS viraram de/ate (re-clica
        ate 3x); 3) Aplica e confere o CARD (re-aplica ate 4x, reabrindo se fechou).
        So baixa quando o card mostra o periodo pedido. */
-    const valInit = () => page.locator('input[id$="FilterDateInit"]').first().inputValue().catch(() => '');
-    const valEnd = () => page.locator('input[id$="FilterDateEnd"]').first().inputValue().catch(() => '');
+    const valInit = () => page.locator('input[id$="FilterDateInit"]').first().inputValue({ timeout: 1500 }).catch(() => '');
+    const valEnd = () => page.locator('input[id$="FilterDateEnd"]').first().inputValue({ timeout: 1500 }).catch(() => '');
     const camposOk = async () => (await valInit()) === opt.de && (await valEnd()) === opt.ate;
     const selecionar = async () => {
       for (let s = 1; s <= 3 && !(await camposOk()); s++) {
