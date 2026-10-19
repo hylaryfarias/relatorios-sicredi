@@ -55,7 +55,7 @@ function carregarContas() {
     + 'No GitHub, cadastre o segredo SICREDI_CONTAS.');
 }
 
-const VERSAO = 'v11.44 (abre e PARA de clicar — nao abre-e-fecha; confirma estavel)';
+const VERSAO = 'v11.45 (abre: 1 clique no icone + checa na hora, repete ate abrir, para na hora)';
 const espera = (ms) => new Promise(r => setTimeout(r, ms));
 
 /* Corre uma promessa contra um relogio: se passar de `ms`, rejeita com timeout.
@@ -364,63 +364,36 @@ async function abrirPeriodoAntecipacao(page) {
   if (await popupPeriodoAberto(page)) return true;
 
   const centroIcone = async () => {
-    const b = await page.locator('[data-testid="calendar-trigger-icon"]').first().boundingBox();
+    const el = page.locator('[data-testid="calendar-trigger-icon"]').first();
+    await el.scrollIntoViewIfNeeded({ timeout: 2000 }).catch(() => {});
+    const b = await el.boundingBox();
     if (!b) throw new Error('sem box da imagem do icone');
     return { x: b.x + b.width / 2, y: b.y + b.height / 2 };
   };
-  const metodos = [
-    // 1) MOUSE HUMANO: chega de fora, passa POR CIMA do icone (hover real) e clica
-    //    com pressionar-e-soltar. Esse calendario pode precisar do mouse em cima
-    //    antes do clique (o clique "teleportado" do robo nao dispara o hover).
-    async () => {
-      const { x, y } = await centroIcone();
-      await page.mouse.move(x - 50, y - 50);
-      await espera(120);
-      await page.mouse.move(x, y, { steps: 8 }); // movimento real ate o icone
-      await espera(300);
-      await page.mouse.down(); await espera(80); await page.mouse.up();
-    },
-    // 2) hover (locator) + clique no centro exato da imagem
-    async () => {
-      await page.locator('[data-testid="calendar-trigger-icon"]').first().hover({ timeout: 2500 });
-      await espera(250);
-      const { x, y } = await centroIcone();
-      await page.mouse.click(x, y);
-    },
-    // 3) clique real na propria imagem (Playwright mira no centro dela)
-    async () => page.locator('[data-testid="calendar-trigger-icon"]').first().click({ timeout: 3000 }),
-    // 4) teclado: focar o link do icone e Enter (aciona o handler do <a>)
-    async () => { const a = page.locator('[data-testid="generic-calendar-icon-calendar"] a').first(); await a.focus({ timeout: 2000 }); await a.press('Enter'); },
-    // 5) API da propria OutSystems + eventos de mouse via JS no icone (blindado
-    //    com tempo limite: em pagina ocupada o evaluate pode pendurar).
-    async () => comTimeout(page.evaluate(() => {
-      const w = document.querySelector('.osui-tooltip.custom-range-picker');
-      try {
-        const O = window.OutSystems;
-        const api = (O && O.OSUI && O.OSUI.Patterns && O.OSUI.Patterns.TooltipAPI)
-                 || (O && O.OSUI && O.OSUI.patterns && O.OSUI.patterns.TooltipAPI);
-        if (api && api.Open && w) { try { api.Open(w.id); } catch { /* */ } try { api.Open(w.getAttribute('name')); } catch { /* */ } }
-      } catch { /* */ }
-      const t = document.querySelector('[data-testid="calendar-trigger-icon"]') || document.querySelector('[data-testid="generic-calendar-icon-calendar"] a');
-      if (t) { try { t.scrollIntoView({ block: 'center' }); } catch { /* */ } for (const e of ['mouseenter', 'mouseover', 'mousedown', 'mouseup', 'click']) t.dispatchEvent(new MouseEvent(e, { bubbles: true, cancelable: true, view: window })); }
-    }), 3000, 'abrir via JS'),
-  ];
-  /* UMA passada so pelos metodos. Depois de CADA clique, espera generosa (5s) e
-     so considera aberto quando confirma ESTAVEL (duas checagens com 500ms). Isso
-     evita o abre-e-fecha: assim que um metodo abre, PARA e nao clica de novo. */
-  for (const faz of metodos) {
-    if (await popupPeriodoAberto(page)) return true; // ja aberto? nao clica
-    try { await faz(); } catch { /* tenta o proximo */ }
-    await espera(600); // deixa a animacao/classe de abertura acontecer
-    const ate = Date.now() + 5000;
-    while (Date.now() < ate) {
-      if (await popupPeriodoAberto(page)) {
-        await espera(500);
-        if (await popupPeriodoAberto(page)) return true; // aberto e estavel
-      }
-      await espera(300);
-    }
+  // UM clique de mouse REAL no centro exato do icone (igual a pessoa).
+  const clicarIcone = async () => {
+    const { x, y } = await centroIcone();
+    await page.mouse.move(x, y, { steps: 4 });
+    await espera(120);
+    await page.mouse.down(); await espera(70); await page.mouse.up();
+  };
+
+  /* Esse calendario ALTERNA a cada clique (clica=abre, clica=fecha). Entao:
+     clico UMA vez, checo NA HORA se abriu, e PARO. Se nao abriu (o clique nao
+     pegou na pagina ocupada), clico de novo e checo de novo — ate 8 vezes. */
+  for (let i = 0; i < 8; i++) {
+    if (await popupPeriodoAberto(page)) return true;
+    try { await clicarIcone(); } catch { /* */ }
+    await espera(700);
+    if (await popupPeriodoAberto(page)) return true; // abriu com esse clique? para
   }
+  // ultimo recurso: teclado (Enter no link do icone) + checagem
+  try {
+    const a = page.locator('[data-testid="generic-calendar-icon-calendar"] a').first();
+    await a.focus({ timeout: 2000 }); await a.press('Enter');
+    await espera(700);
+    if (await popupPeriodoAberto(page)) return true;
+  } catch { /* */ }
   return false;
 }
 /* Rede de seguranca: se o robo nao abrir o calendario da antecipacao sozinho,
