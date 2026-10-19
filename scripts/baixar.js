@@ -55,7 +55,7 @@ function carregarContas() {
     + 'No GitHub, cadastre o segredo SICREDI_CONTAS.');
 }
 
-const VERSAO = 'v11.42 (detecta abertura pela VISIBILIDADE real do calendario; blinda a selecao)';
+const VERSAO = 'v11.43 (corrige falso-positivo que fazia o robo NAO clicar no icone)';
 const espera = (ms) => new Promise(r => setTimeout(r, ms));
 
 /* Corre uma promessa contra um relogio: se passar de `ms`, rejeita com timeout.
@@ -309,15 +309,17 @@ async function popupPeriodoAberto(page) {
      display:none / visibility:hidden / opacity baixa, e precisa ter um box de
      tamanho de calendario NA TELA, com o botao Aplicar e os dias dentro. */
   return await comTimeout(page.evaluate(() => {
-    const cands = Array.from(document.querySelectorAll('.osui-tooltip.custom-range-picker, .flatpickr-calendar'));
-    for (const w of cands) {
+    // SO conta como aberto se o tooltip tiver a classe osui-tooltip--is-open (o
+    // site so poe quando abre de verdade), estiver visivel, com box na tela e com
+    // os dias do calendario dentro. Nada de olhar o flatpickr solto (fica sempre
+    // no HTML e dava falso-positivo — o robo "achava" aberto e nem clicava).
+    const abertos = Array.from(document.querySelectorAll('.osui-tooltip.custom-range-picker.osui-tooltip--is-open'));
+    for (const w of abertos) {
       const cs = getComputedStyle(w);
       if (cs.display === 'none' || cs.visibility === 'hidden' || parseFloat(cs.opacity || '1') < 0.3) continue;
       const r = w.getBoundingClientRect();
       if (r.width < 80 || r.height < 80 || r.bottom <= 0 || r.top >= innerHeight) continue;
-      const btn = w.querySelector('.btn-apply, [data-testid="generic-calendar-button-aplicar"]') || document.querySelector('.btn-apply');
-      const dia = w.querySelector('.flatpickr-day:not(.flatpickr-disabled)');
-      if (btn && dia) return true;
+      if (w.querySelector('.flatpickr-day')) return true;
     }
     return false;
   }), 2000, 'popupPeriodoAberto').catch(() => false);
