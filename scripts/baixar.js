@@ -55,7 +55,7 @@ function carregarContas() {
     + 'No GitHub, cadastre o segredo SICREDI_CONTAS.');
 }
 
-const VERSAO = 'v11.38 (antecipacao: espera leve + 2 voltas de clique no icone — corrige timeout geral)';
+const VERSAO = 'v11.39 (antecipacao: blinda os comandos JS do abridor pra nao pendurar em pagina ocupada)';
 const espera = (ms) => new Promise(r => setTimeout(r, ms));
 
 /* Corre uma promessa contra um relogio: se passar de `ms`, rejeita com timeout.
@@ -378,8 +378,9 @@ async function abrirPeriodoAntecipacao(page) {
     async () => page.locator('[data-testid="calendar-trigger-icon"]').first().click({ timeout: 3000 }),
     // 4) teclado: focar o link do icone e Enter (aciona o handler do <a>)
     async () => { const a = page.locator('[data-testid="generic-calendar-icon-calendar"] a').first(); await a.focus({ timeout: 2000 }); await a.press('Enter'); },
-    // 5) API da propria OutSystems + eventos de mouse via JS no icone
-    async () => page.evaluate(() => {
+    // 5) API da propria OutSystems + eventos de mouse via JS no icone (blindado
+    //    com tempo limite: em pagina ocupada o evaluate pode pendurar).
+    async () => comTimeout(page.evaluate(() => {
       const w = document.querySelector('.osui-tooltip.custom-range-picker');
       try {
         const O = window.OutSystems;
@@ -389,7 +390,7 @@ async function abrirPeriodoAntecipacao(page) {
       } catch { /* */ }
       const t = document.querySelector('[data-testid="calendar-trigger-icon"]') || document.querySelector('[data-testid="generic-calendar-icon-calendar"] a');
       if (t) { try { t.scrollIntoView({ block: 'center' }); } catch { /* */ } for (const e of ['mouseenter', 'mouseover', 'mousedown', 'mouseup', 'click']) t.dispatchEvent(new MouseEvent(e, { bubbles: true, cancelable: true, view: window })); }
-    }),
+    }), 3000, 'abrir via JS'),
   ];
   // DUAS voltas pelas formas de clicar (timing varia por loja), cada metodo
   // seguido de espera paciente (3.5s) por is-open, sem clicar por cima.
