@@ -55,7 +55,7 @@ function carregarContas() {
     + 'No GitHub, cadastre o segredo SICREDI_CONTAS.');
 }
 
-const VERSAO = 'v11.43 (corrige falso-positivo que fazia o robo NAO clicar no icone)';
+const VERSAO = 'v11.44 (abre e PARA de clicar — nao abre-e-fecha; confirma estavel)';
 const espera = (ms) => new Promise(r => setTimeout(r, ms));
 
 /* Corre uma promessa contra um relogio: se passar de `ms`, rejeita com timeout.
@@ -405,13 +405,20 @@ async function abrirPeriodoAntecipacao(page) {
       if (t) { try { t.scrollIntoView({ block: 'center' }); } catch { /* */ } for (const e of ['mouseenter', 'mouseover', 'mousedown', 'mouseup', 'click']) t.dispatchEvent(new MouseEvent(e, { bubbles: true, cancelable: true, view: window })); }
     }), 3000, 'abrir via JS'),
   ];
-  // DUAS voltas pelas formas de clicar (timing varia por loja), cada metodo
-  // seguido de espera paciente (3.5s) por is-open, sem clicar por cima.
-  for (let volta = 0; volta < 2; volta++) {
-    for (const faz of metodos) {
-      if (await popupPeriodoAberto(page)) return true;
-      try { await faz(); } catch { /* tenta o proximo */ }
-      if (await esperaPopup(page, 2500)) { await espera(250); if (await popupPeriodoAberto(page)) return true; }
+  /* UMA passada so pelos metodos. Depois de CADA clique, espera generosa (5s) e
+     so considera aberto quando confirma ESTAVEL (duas checagens com 500ms). Isso
+     evita o abre-e-fecha: assim que um metodo abre, PARA e nao clica de novo. */
+  for (const faz of metodos) {
+    if (await popupPeriodoAberto(page)) return true; // ja aberto? nao clica
+    try { await faz(); } catch { /* tenta o proximo */ }
+    await espera(600); // deixa a animacao/classe de abertura acontecer
+    const ate = Date.now() + 5000;
+    while (Date.now() < ate) {
+      if (await popupPeriodoAberto(page)) {
+        await espera(500);
+        if (await popupPeriodoAberto(page)) return true; // aberto e estavel
+      }
+      await espera(300);
     }
   }
   return false;
