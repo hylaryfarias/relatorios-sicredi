@@ -55,7 +55,7 @@ function carregarContas() {
     + 'No GitHub, cadastre o segredo SICREDI_CONTAS.');
 }
 
-const VERSAO = 'v11.45 (abre: 1 clique no icone + checa na hora, repete ate abrir, para na hora)';
+const VERSAO = 'v11.46 (abre: varios tipos de clique no icone + checa/para na hora; detecta so pela classe)';
 const espera = (ms) => new Promise(r => setTimeout(r, ms));
 
 /* Corre uma promessa contra um relogio: se passar de `ms`, rejeita com timeout.
@@ -308,21 +308,11 @@ async function popupPeriodoAberto(page) {
      checar "existe" engana. Checo a VISIBILIDADE REAL do tooltip: nao pode estar
      display:none / visibility:hidden / opacity baixa, e precisa ter um box de
      tamanho de calendario NA TELA, com o botao Aplicar e os dias dentro. */
-  return await comTimeout(page.evaluate(() => {
-    // SO conta como aberto se o tooltip tiver a classe osui-tooltip--is-open (o
-    // site so poe quando abre de verdade), estiver visivel, com box na tela e com
-    // os dias do calendario dentro. Nada de olhar o flatpickr solto (fica sempre
-    // no HTML e dava falso-positivo — o robo "achava" aberto e nem clicava).
-    const abertos = Array.from(document.querySelectorAll('.osui-tooltip.custom-range-picker.osui-tooltip--is-open'));
-    for (const w of abertos) {
-      const cs = getComputedStyle(w);
-      if (cs.display === 'none' || cs.visibility === 'hidden' || parseFloat(cs.opacity || '1') < 0.3) continue;
-      const r = w.getBoundingClientRect();
-      if (r.width < 80 || r.height < 80 || r.bottom <= 0 || r.top >= innerHeight) continue;
-      if (w.querySelector('.flatpickr-day')) return true;
-    }
-    return false;
-  }), 2000, 'popupPeriodoAberto').catch(() => false);
+  // A classe osui-tooltip--is-open SO existe quando o calendario abre de verdade
+  // (confirmado no HTML). Checar so isso e o sinal mais certeiro e rapido.
+  return await comTimeout(page.evaluate(() =>
+    !!document.querySelector('.osui-tooltip.custom-range-picker.osui-tooltip--is-open')
+  ), 1500, 'popupPeriodoAberto').catch(() => false);
 }
 async function esperaPopup(page, ms = 5000) {
   const ate = Date.now() + ms;
@@ -370,30 +360,32 @@ async function abrirPeriodoAntecipacao(page) {
     if (!b) throw new Error('sem box da imagem do icone');
     return { x: b.x + b.width / 2, y: b.y + b.height / 2 };
   };
-  // UM clique de mouse REAL no centro exato do icone (igual a pessoa).
-  const clicarIcone = async () => {
-    const { x, y } = await centroIcone();
-    await page.mouse.move(x, y, { steps: 4 });
-    await espera(120);
-    await page.mouse.down(); await espera(70); await page.mouse.up();
-  };
-
-  /* Esse calendario ALTERNA a cada clique (clica=abre, clica=fecha). Entao:
-     clico UMA vez, checo NA HORA se abriu, e PARO. Se nao abriu (o clique nao
-     pegou na pagina ocupada), clico de novo e checo de novo — ate 8 vezes. */
+  /* Varios TIPOS de clique no icone (um deles e o que abre). Esse calendario
+     ALTERNA a cada clique, entao faco UM tipo por vez, checo NA HORA e PARO
+     assim que abrir. Ciclo os tipos ate 8 vezes. */
+  const cliques = [
+    // a) clique de mouse no centro exato da imagem (igual a pessoa)
+    async () => { const { x, y } = await centroIcone(); await page.mouse.move(x, y, { steps: 4 }); await espera(120); await page.mouse.down(); await espera(70); await page.mouse.up(); },
+    // b) clique forcado na imagem (Playwright)
+    async () => page.locator('[data-testid="calendar-trigger-icon"]').first().click({ timeout: 2500, force: true }),
+    // c) clique no link <a> do icone
+    async () => page.locator('[data-testid="generic-calendar-icon-calendar"] a').first().click({ timeout: 2500, force: true }),
+    // d) teclado: Enter no link
+    async () => { const a = page.locator('[data-testid="generic-calendar-icon-calendar"] a').first(); await a.focus({ timeout: 2000 }); await a.press('Enter'); },
+    // e) eventos de mouse via JS + API OutSystems (blindado)
+    async () => comTimeout(page.evaluate(() => {
+      const w = document.querySelector('.osui-tooltip.custom-range-picker');
+      try { const O = window.OutSystems; const api = (O && O.OSUI && O.OSUI.Patterns && O.OSUI.Patterns.TooltipAPI) || (O && O.OSUI && O.OSUI.patterns && O.OSUI.patterns.TooltipAPI); if (api && api.Open && w) { try { api.Open(w.id); } catch {} try { api.Open(w.getAttribute('name')); } catch {} } } catch {}
+      const t = document.querySelector('[data-testid="generic-calendar-icon-calendar"] a') || document.querySelector('[data-testid="calendar-trigger-icon"]');
+      if (t) { try { t.scrollIntoView({ block: 'center' }); } catch {} for (const e of ['mouseenter', 'mouseover', 'mousedown', 'mouseup', 'click']) t.dispatchEvent(new MouseEvent(e, { bubbles: true, cancelable: true, view: window })); }
+    }), 3000, 'abrir via JS'),
+  ];
   for (let i = 0; i < 8; i++) {
     if (await popupPeriodoAberto(page)) return true;
-    try { await clicarIcone(); } catch { /* */ }
+    try { await cliques[i % cliques.length](); } catch { /* */ }
     await espera(700);
-    if (await popupPeriodoAberto(page)) return true; // abriu com esse clique? para
+    if (await popupPeriodoAberto(page)) return true; // abriu? para na hora
   }
-  // ultimo recurso: teclado (Enter no link do icone) + checagem
-  try {
-    const a = page.locator('[data-testid="generic-calendar-icon-calendar"] a').first();
-    await a.focus({ timeout: 2000 }); await a.press('Enter');
-    await espera(700);
-    if (await popupPeriodoAberto(page)) return true;
-  } catch { /* */ }
   return false;
 }
 /* Rede de seguranca: se o robo nao abrir o calendario da antecipacao sozinho,
