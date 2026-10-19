@@ -55,7 +55,7 @@ function carregarContas() {
     + 'No GitHub, cadastre o segredo SICREDI_CONTAS.');
 }
 
-const VERSAO = 'v11.46 (abre: varios tipos de clique no icone + checa/para na hora; detecta so pela classe)';
+const VERSAO = 'v11.47 (selecao: checa rapido se o dia existe, blinda e loga cada clique; nao pendura)';
 const espera = (ms) => new Promise(r => setTimeout(r, ms));
 
 /* Corre uma promessa contra um relogio: se passar de `ms`, rejeita com timeout.
@@ -482,20 +482,23 @@ async function clicarDiaCalendario(page, br) {
     document.querySelectorAll('.data-range-picker-btn, [id$="data_range_picker_btn"]').forEach(b => { b.style.pointerEvents = ''; });
   }), 2500, 'religa card').catch(() => {});
 
-  await desliga();
-  await espera(150); // deixa o pointer-events aplicar antes de clicar
   const dia = page.locator(`.flatpickr-day[aria-label="${lbl}"]:not(.prevMonthDay):not(.nextMonthDay):not(.flatpickr-disabled)`).first();
-  await dia.scrollIntoViewIfNeeded({ timeout: 2000 }).catch(() => {});
+  // CHECA RAPIDO se o dia existe (senao, nao pendura 30s esperando por ele)
+  const existe = await dia.count().catch(() => 0);
+  if (!existe) { console.log(`      (dia "${lbl}" nao encontrado no calendario)`); return; }
+  await desliga();
+  await espera(120); // deixa o pointer-events aplicar antes de clicar
+  await dia.scrollIntoViewIfNeeded({ timeout: 1500 }).catch(() => {});
+  let ok = false;
   try {
-    // FORCE: pula a checagem de interceptacao do Playwright, mas o clique CONTINUA
-    // sendo um clique de mouse REAL (confiavel) — com o card desligado, cai no dia,
-    // e so assim o OutSystems registra a selecao.
-    await dia.click({ force: true, timeout: 3500 });
-  } catch {
-    await dia.evaluate(el => { for (const t of ['mousedown', 'mouseup', 'click']) el.dispatchEvent(new MouseEvent(t, { bubbles: true, cancelable: true, view: window })); }).catch(() => {});
+    // FORCE: clique de mouse REAL (confiavel) no dia, com o card desligado.
+    await dia.click({ force: true, timeout: 2500 }); ok = true;
+  } catch { /* cai pro JS */ }
+  if (!ok) {
+    await comTimeout(dia.evaluate(el => { for (const t of ['mousedown', 'mouseup', 'click']) el.dispatchEvent(new MouseEvent(t, { bubbles: true, cancelable: true, view: window })); }), 2500, 'clique dia JS').catch(() => {});
   }
   await religa();   // IMPORTANTE: religa o card pra nao travar o abrir na proxima
-  await espera(400);
+  await espera(350);
 }
 /* Seta a faixa [de, ate] direto na instancia do flatpickr (modo range), que e o
    que o Aplicar usa. Procura a instancia em qualquer elemento (._flatpickr). */
@@ -546,6 +549,7 @@ async function definirPeriodo(page, conta, opt, tipo = 'vendas') {
         try { await clicarDiaCalendario(page, opt.de); await clicarDiaCalendario(page, opt.ate); }
         catch (e) { console.log(`  ${conta.nome}: clique nos dias falhou (${e.message})`); }
         await espera(400);
+        console.log(`  ${conta.nome}: campos apos clique ${s} -> ${await valInit()} a ${await valEnd()}`);
       }
       return camposOk();
     };
@@ -646,7 +650,7 @@ async function processarConta(browser, conta, opt = {}) {
            A tela de antecipacao pode ter o seletor DIFERENTE do vendas; se o periodo
            por datas nao for aceito, NAO trava — baixa em 7 dias e avisa. */
         if (periodoCustom) {
-          try { await comTimeout(definirPeriodo(page, conta, opt, 'antecipacao'), 90000, 'definir periodo antecipacao'); }
+          try { await comTimeout(definirPeriodo(page, conta, opt, 'antecipacao'), 50000, 'definir periodo antecipacao'); }
           catch (e) {
             try {
               fs.mkdirSync(PASTA_ERROS, { recursive: true });
