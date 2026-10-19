@@ -55,7 +55,7 @@ function carregarContas() {
     + 'No GitHub, cadastre o segredo SICREDI_CONTAS.');
 }
 
-const VERSAO = 'v11.39 (antecipacao: blinda os comandos JS do abridor pra nao pendurar em pagina ocupada)';
+const VERSAO = 'v11.40 (diagnostico: abridor mais rapido + loga se ABRIU/NAO + blinda navegacao do mes)';
 const espera = (ms) => new Promise(r => setTimeout(r, ms));
 
 /* Corre uma promessa contra um relogio: se passar de `ms`, rejeita com timeout.
@@ -398,10 +398,9 @@ async function abrirPeriodoAntecipacao(page) {
     for (const faz of metodos) {
       if (await popupPeriodoAberto(page)) return true;
       try { await faz(); } catch { /* tenta o proximo */ }
-      if (await esperaPopup(page, 3500)) { await espera(300); if (await popupPeriodoAberto(page)) return true; }
+      if (await esperaPopup(page, 2500)) { await espera(250); if (await popupPeriodoAberto(page)) return true; }
     }
   }
-  await dumpPeriodoDOM(page);
   return false;
 }
 /* Rede de seguranca: se o robo nao abrir o calendario da antecipacao sozinho,
@@ -468,15 +467,15 @@ function ariaDia(br) {
 async function navegarCalendario(page, br) {
   const [, m, y] = String(br).split('/').map(n => parseInt(n, 10));
   const alvo = y * 12 + (m - 1);
-  for (let i = 0; i < 48; i++) {
-    const atual = await page.evaluate(() => {
+  for (let i = 0; i < 24; i++) {
+    const atual = await comTimeout(page.evaluate(() => {
       const cal = document.querySelector('.flatpickr-calendar.open') || document.querySelector('.flatpickr-calendar');
       if (!cal) return null;
       const sel = cal.querySelector('.flatpickr-monthDropdown-months');
       const ano = cal.querySelector('input.cur-year');
       if (!sel || !ano) return null;
       return parseInt(ano.value, 10) * 12 + sel.selectedIndex;
-    }).catch(() => null);
+    }), 2500, 'navegar mes').catch(() => null);
     if (atual === null || atual === alvo) return;
     const btn = atual < alvo ? '.flatpickr-calendar .flatpickr-next-month' : '.flatpickr-calendar .flatpickr-prev-month';
     await page.locator(btn).first().click({ timeout: 2000 }).catch(() => {});
@@ -566,7 +565,10 @@ async function definirPeriodo(page, conta, opt, tipo = 'vendas') {
       return camposOk();
     };
 
-    if (!(await abrirPeriodoAntecipacao(page))) { await dumpPaginaCompleta(page); throw new Error('nao abriu o calendario da antecipacao'); }
+    const aberto = await abrirPeriodoAntecipacao(page);
+    console.log(`  ${conta.nome}: calendario ${aberto ? 'ABRIU' : 'NAO abriu'}.`);
+    if (!aberto) { await dumpPaginaCompleta(page); throw new Error('nao abriu o calendario da antecipacao'); }
+    console.log(`  ${conta.nome}: selecionando os dias...`);
     await espera(500);
     if (!(await selecionar())) {
       await dumpPaginaCompleta(page);
