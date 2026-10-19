@@ -55,7 +55,7 @@ function carregarContas() {
     + 'No GitHub, cadastre o segredo SICREDI_CONTAS.');
 }
 
-const VERSAO = 'v11.40 (diagnostico: abridor mais rapido + loga se ABRIU/NAO + blinda navegacao do mes)';
+const VERSAO = 'v11.41 (so relatorios DETALHADOS: vendas detalhado + antecipacao detalhado) + diagnostico abridor';
 const espera = (ms) => new Promise(r => setTimeout(r, ms));
 
 /* Corre uma promessa contra um relogio: se passar de `ms`, rejeita com timeout.
@@ -626,7 +626,7 @@ async function processarConta(browser, conta, opt = {}) {
   try {
     await entrar(page, conta);
 
-    // VENDAS — Relatorio simplificado. Periodo: custom (ex. agosto) ou 7 dias.
+    // VENDAS — Relatorio DETALHADO. Periodo: custom (ex. agosto) ou 7 dias.
     await clicar(page, ['Vendas', /^vendas/i], { timeout: 20000 });
     await espera(1500);
     await clicar(page, [/relat[oó]rio de vendas/i], { timeout: 8000 }).catch(() => {});
@@ -634,22 +634,21 @@ async function processarConta(browser, conta, opt = {}) {
     if (periodoCustom) await definirPeriodo(page, conta, opt, 'vendas');
     const sufixo = periodoCustom ? `_${opt.de.replace(/\//g, '')}-${opt.ate.replace(/\//g, '')}` : '';
     feitos.push(await baixar(page, conta, {
-      titulo: periodoCustom ? `Vendas (${opt.de} a ${opt.ate}, simplificado)` : 'Vendas (7 dias, simplificado)',
-      arquivoBase: `vendas_${limpo(conta.nome)}${sufixo}`,
+      titulo: periodoCustom ? `Vendas detalhado (${opt.de} a ${opt.ate})` : 'Vendas detalhado (7 dias)',
+      arquivoBase: `vendas_detalhado_${limpo(conta.nome)}${sufixo}`,
       etapas: [
         ...(periodoCustom ? [] : [{ textos: [/ltimos 7 dias/i], espera: 1500 }]),
         { textos: [/exportar relat[oó]rio|exportar/i], espera: 1500 },
-        { textos: [/relat[oó]rio simplificado/i], espera: 800 },
+        { textos: [/relat[oó]rio detalhado/i], espera: 800 },
       ],
     }));
 
     /* --so-vendas: para por aqui, sem os relatorios de antecipacao */
     if (opt.soVendas) { await ctx.close(); return { conta: conta.nome, ok: true, faltouAntecip: false, arquivos: feitos }; }
 
-    // ANTECIPACAO — DOIS relatorios da mesma tela: detalhado por arranjo e
-    // simplificado por antecipacao. Todas as lojas tem. As vezes a pagina
-    // demora a carregar; tenta de novo uma vez. Se nao vier completa, marca
-    // para refazer (o Vendas ja esta salvo) — nao some sem avisar.
+    // ANTECIPACAO — Relatorio DETALHADO (so esse). As vezes a pagina demora a
+    // carregar; tenta de novo uma vez. Se nao vier, marca para refazer (o Vendas
+    // ja esta salvo) — nao some sem avisar.
     let faltouAntecip = false;
     for (let tentativa = 1; tentativa <= 2; tentativa++) {
       try {
@@ -673,22 +672,13 @@ async function processarConta(browser, conta, opt = {}) {
           }
         } else await clicar(page, [/ltimos 7 dias/i], { timeout: 8000 });
         await espera(1500);
-        // 1) detalhado por arranjo
+        // antecipacao DETALHADO (so esse)
         feitos.push(await baixar(page, conta, {
           titulo: periodoCustom ? `Antecipacao detalhado (${opt.de} a ${opt.ate})` : 'Antecipacao detalhado (por arranjo)',
           arquivoBase: `antecipacao_detalhado_${limpo(conta.nome)}${sufixo}`,
           etapas: [
             { textos: [/exportar/i], espera: 1500 },
             { textos: [/relat[oó]rio detalhado/i], espera: 800 },
-          ],
-        }));
-        // 2) simplificado por antecipacao
-        feitos.push(await baixar(page, conta, {
-          titulo: periodoCustom ? `Antecipacao simplificado (${opt.de} a ${opt.ate})` : 'Antecipacao simplificado (por antecipacao)',
-          arquivoBase: `antecipacao_simplificado_${limpo(conta.nome)}${sufixo}`,
-          etapas: [
-            { textos: [/exportar/i], espera: 1500 },
-            { textos: [/relat[oó]rio simplificado/i], espera: 800 },
           ],
         }));
         faltouAntecip = false;
