@@ -55,7 +55,7 @@ function carregarContas() {
     + 'No GitHub, cadastre o segredo SICREDI_CONTAS.');
 }
 
-const VERSAO = 'v11.48 (selecao: DIGITA a data nos campos com teclas reais + clique no dia de reforco)';
+const VERSAO = 'v11.49 (rotulo do cabecalho corrigido: vendas detalhado + antecipacao detalhado)';
 const espera = (ms) => new Promise(r => setTimeout(r, ms));
 
 /* Corre uma promessa contra um relogio: se passar de `ms`, rejeita com timeout.
@@ -725,7 +725,7 @@ async function main() {
        --mes 2026-08 (ou 08)  periodo = o mes inteiro (ex.: agosto)
        --de 01/08/2026 --ate 31/08/2026   periodo por datas
        nomes/logins soltos    roda SO essas lojas (ex.: 02 isa02)
-     Sem nada: comportamento de sempre (7 dias, vendas + 2 antecipacoes, todas). */
+     Sem nada: comportamento de sempre (7 dias, vendas detalhado + antecipacao detalhado, todas). */
   const rawArgs = process.argv.slice(2);
   const opt = { soVendas: false, de: null, ate: null, deISO: null, ateISO: null };
   const filtro = [];
@@ -761,7 +761,7 @@ async function main() {
   console.log(`\n=== Robo Sicredi ${VERSAO} ===`);
   console.log(`Modo: ${MODO} | Lojas: ${contas.length}`
     + (filtro.length ? ` (so: ${contas.map(c => c.nome).join(', ')})` : ''));
-  console.log(`Relatorios: ${opt.soVendas ? 'SO vendas' : 'vendas + 2 antecipacoes'}`
+  console.log(`Relatorios: ${opt.soVendas ? 'SO vendas detalhado' : 'vendas detalhado + antecipacao detalhado'}`
     + ` | Periodo: ${opt.de && opt.ate ? `${opt.de} a ${opt.ate}` : 'Ultimos 7 dias'}\n`);
 
   const browser = await chromium.launch({
