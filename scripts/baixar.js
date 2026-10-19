@@ -55,7 +55,7 @@ function carregarContas() {
     + 'No GitHub, cadastre o segredo SICREDI_CONTAS.');
 }
 
-const VERSAO = 'v11.47 (selecao: checa rapido se o dia existe, blinda e loga cada clique; nao pendura)';
+const VERSAO = 'v11.48 (selecao: DIGITA a data nos campos com teclas reais + clique no dia de reforco)';
 const espera = (ms) => new Promise(r => setTimeout(r, ms));
 
 /* Corre uma promessa contra um relogio: se passar de `ms`, rejeita com timeout.
@@ -544,11 +544,31 @@ async function definirPeriodo(page, conta, opt, tipo = 'vendas') {
     const valInit = () => page.locator('input[id$="FilterDateInit"]').first().inputValue({ timeout: 1500 }).catch(() => '');
     const valEnd = () => page.locator('input[id$="FilterDateEnd"]').first().inputValue({ timeout: 1500 }).catch(() => '');
     const camposOk = async () => (await valInit()) === opt.de && (await valEnd()) === opt.ate;
+    // DIGITA a data no campo (com teclas de verdade, igual a pessoa faz).
+    const digitar = async (idSuffix, br) => {
+      const campo = page.locator(`input[id$="${idSuffix}"]`).first();
+      if (!(await campo.count().catch(() => 0))) return;
+      try {
+        await campo.click({ timeout: 2500 });
+        await page.keyboard.press('Control+A');
+        await page.keyboard.press('Delete');
+        await page.keyboard.type(br, { delay: 60 }); // teclas reais -> OutSystems registra
+        await page.keyboard.press('Enter');
+      } catch { /* */ }
+      await espera(300);
+    };
     const selecionar = async () => {
       for (let s = 1; s <= 3 && !(await camposOk()); s++) {
+        // 1) DIGITAR a data (jeito da pessoa)
+        await digitar('FilterDateInit', opt.de);
+        await digitar('FilterDateEnd', opt.ate);
+        await espera(300);
+        console.log(`  ${conta.nome}: campos apos digitar ${s} -> ${await valInit()} a ${await valEnd()}`);
+        if (await camposOk()) break;
+        // 2) reforco: clicar os dias no calendario
         try { await clicarDiaCalendario(page, opt.de); await clicarDiaCalendario(page, opt.ate); }
         catch (e) { console.log(`  ${conta.nome}: clique nos dias falhou (${e.message})`); }
-        await espera(400);
+        await espera(300);
         console.log(`  ${conta.nome}: campos apos clique ${s} -> ${await valInit()} a ${await valEnd()}`);
       }
       return camposOk();
