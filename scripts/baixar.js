@@ -55,7 +55,7 @@ function carregarContas() {
     + 'No GitHub, cadastre o segredo SICREDI_CONTAS.');
 }
 
-const VERSAO = 'v11.50 (adiciona Recebimentos pagos detalhado: datas ou Essa Semana)';
+const VERSAO = 'v11.51 (escolher relatorios: --vendas --antecipacao --recebimentos; sem flag = os tres)';
 const espera = (ms) => new Promise(r => setTimeout(r, ms));
 
 /* Corre uma promessa contra um relogio: se passar de `ms`, rejeita com timeout.
@@ -632,34 +632,34 @@ async function processarConta(browser, conta, opt = {}) {
   const page = await ctx.newPage();
   const feitos = [];
   const periodoCustom = !!(opt.de && opt.ate);
+  const sufixo = periodoCustom ? `_${opt.de.replace(/\//g, '')}-${opt.ate.replace(/\//g, '')}` : '';
+  const quais = opt.quais || { vendas: true, antecip: true, receb: true };
   try {
     await entrar(page, conta);
 
     // VENDAS — Relatorio DETALHADO. Periodo: custom (ex. agosto) ou 7 dias.
-    await clicar(page, ['Vendas', /^vendas/i], { timeout: 20000 });
-    await espera(1500);
-    await clicar(page, [/relat[oó]rio de vendas/i], { timeout: 8000 }).catch(() => {});
-    await espera(1500);
-    if (periodoCustom) await definirPeriodo(page, conta, opt, 'vendas');
-    const sufixo = periodoCustom ? `_${opt.de.replace(/\//g, '')}-${opt.ate.replace(/\//g, '')}` : '';
-    feitos.push(await baixar(page, conta, {
-      titulo: periodoCustom ? `Vendas detalhado (${opt.de} a ${opt.ate})` : 'Vendas detalhado (7 dias)',
-      arquivoBase: `vendas_detalhado_${limpo(conta.nome)}${sufixo}`,
-      etapas: [
-        ...(periodoCustom ? [] : [{ textos: [/ltimos 7 dias/i], espera: 1500 }]),
-        { textos: [/exportar relat[oó]rio|exportar/i], espera: 1500 },
-        { textos: [/relat[oó]rio detalhado/i], espera: 800 },
-      ],
-    }));
-
-    /* --so-vendas: para por aqui, sem os relatorios de antecipacao */
-    if (opt.soVendas) { await ctx.close(); return { conta: conta.nome, ok: true, faltouAntecip: false, arquivos: feitos }; }
+    if (quais.vendas) {
+      await clicar(page, ['Vendas', /^vendas/i], { timeout: 20000 });
+      await espera(1500);
+      await clicar(page, [/relat[oó]rio de vendas/i], { timeout: 8000 }).catch(() => {});
+      await espera(1500);
+      if (periodoCustom) await definirPeriodo(page, conta, opt, 'vendas');
+      feitos.push(await baixar(page, conta, {
+        titulo: periodoCustom ? `Vendas detalhado (${opt.de} a ${opt.ate})` : 'Vendas detalhado (7 dias)',
+        arquivoBase: `vendas_detalhado_${limpo(conta.nome)}${sufixo}`,
+        etapas: [
+          ...(periodoCustom ? [] : [{ textos: [/ltimos 7 dias/i], espera: 1500 }]),
+          { textos: [/exportar relat[oó]rio|exportar/i], espera: 1500 },
+          { textos: [/relat[oó]rio detalhado/i], espera: 800 },
+        ],
+      }));
+    }
 
     // ANTECIPACAO — Relatorio DETALHADO (so esse). As vezes a pagina demora a
     // carregar; tenta de novo uma vez. Se nao vier, marca para refazer (o Vendas
     // ja esta salvo) — nao some sem avisar.
     let faltouAntecip = false;
-    for (let tentativa = 1; tentativa <= 2; tentativa++) {
+    for (let tentativa = 1; quais.antecip && tentativa <= 2; tentativa++) {
       try {
         console.log(`  ${conta.nome}: abrindo a tela de antecipacao... (tentativa ${tentativa})`);
         await clicar(page, ['Antecipação', /antecipa/i], { timeout: 15000 });
@@ -706,7 +706,7 @@ async function processarConta(browser, conta, opt = {}) {
     // RECEBIMENTOS (aba Pagos) — Relatorio DETALHADO. Periodo: datas (custom) ou
     // "Essa Semana" (sem data). Mesmo calendario da antecipacao.
     let faltouReceb = false;
-    for (let tentativa = 1; tentativa <= 2; tentativa++) {
+    for (let tentativa = 1; quais.receb && tentativa <= 2; tentativa++) {
       try {
         console.log(`  ${conta.nome}: abrindo Recebimentos... (tentativa ${tentativa})`);
         await clicar(page, ['Recebimentos', /recebimentos/i], { timeout: 15000 });
@@ -759,23 +759,31 @@ async function processarConta(browser, conta, opt = {}) {
 async function main() {
   let contas = carregarContas();
   /* Argumentos da linha de comando:
-       --so-vendas            baixa SO o relatorio de vendas (pula antecipacao)
+       --vendas / --antecipacao / --recebimentos   escolhe QUAIS relatorios baixar
+         (pode combinar: "--vendas --recebimentos"). Sem nenhum, baixa os TRES.
+       --so-vendas            atalho para so vendas
        --mes 2026-08 (ou 08)  periodo = o mes inteiro (ex.: agosto)
        --de 01/08/2026 --ate 31/08/2026   periodo por datas
        nomes/logins soltos    roda SO essas lojas (ex.: 02 isa02)
-     Sem nada: comportamento de sempre (7 dias, vendas detalhado + antecipacao detalhado, todas). */
+     Sem nada: 7 dias, os tres relatorios detalhados, todas as lojas. */
   const rawArgs = process.argv.slice(2);
-  const opt = { soVendas: false, de: null, ate: null, deISO: null, ateISO: null };
+  const opt = { de: null, ate: null, deISO: null, ateISO: null, quais: { vendas: false, antecip: false, receb: false } };
+  let escolheu = false;
   const filtro = [];
   for (let i = 0; i < rawArgs.length; i++) {
     const a = rawArgs[i].toLowerCase();
-    if (a === '--so-vendas' || a === '--somente-vendas' || a === '--vendas') opt.soVendas = true;
+    if (a === '--vendas' || a === '--venda') { opt.quais.vendas = true; escolheu = true; }
+    else if (a === '--so-vendas' || a === '--somente-vendas') { opt.quais.vendas = true; escolheu = true; }
+    else if (a === '--antecipacao' || a === '--antecipação' || a === '--antecip' || a === '--antecipacoes') { opt.quais.antecip = true; escolheu = true; }
+    else if (a === '--recebimentos' || a === '--recebimento' || a === '--receb') { opt.quais.receb = true; escolheu = true; }
     else if (a === '--de') opt.de = rawArgs[++i];
     else if (a === '--ate' || a === '--até') opt.ate = rawArgs[++i];
     else if (a === '--mes' || a === '--mês') opt.mes = rawArgs[++i];
     else if (a.startsWith('--')) { /* flag desconhecida: ignora */ }
     else filtro.push(a);
   }
+  // sem escolha explicita: baixa os tres
+  if (!escolheu) opt.quais = { vendas: true, antecip: true, receb: true };
   const dd = n => String(n).padStart(2, '0');
   if (opt.mes) {
     const m = String(opt.mes).match(/(\d{4})[-/.](\d{1,2})/) || String(opt.mes).match(/^(\d{1,2})$/);
@@ -799,8 +807,9 @@ async function main() {
   console.log(`\n=== Robo Sicredi ${VERSAO} ===`);
   console.log(`Modo: ${MODO} | Lojas: ${contas.length}`
     + (filtro.length ? ` (so: ${contas.map(c => c.nome).join(', ')})` : ''));
-  console.log(`Relatorios: ${opt.soVendas ? 'SO vendas detalhado' : 'vendas + antecipacao + recebimentos (detalhados)'}`
-    + ` | Periodo: ${opt.de && opt.ate ? `${opt.de} a ${opt.ate}` : 'Ultimos 7 dias'}\n`);
+  const quaisNomes = [opt.quais.vendas && 'vendas', opt.quais.antecip && 'antecipacao', opt.quais.receb && 'recebimentos'].filter(Boolean).join(' + ');
+  console.log(`Relatorios: ${quaisNomes} (detalhados)`
+    + ` | Periodo: ${opt.de && opt.ate ? `${opt.de} a ${opt.ate}` : (opt.quais.receb ? 'Ultimos 7 dias / Essa Semana' : 'Ultimos 7 dias')}\n`);
 
   const browser = await chromium.launch({
     headless: MODO === 'ci',
