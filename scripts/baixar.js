@@ -55,7 +55,7 @@ function carregarContas() {
     + 'No GitHub, cadastre o segredo SICREDI_CONTAS.');
 }
 
-const VERSAO = 'v11.51 (escolher relatorios: --vendas --antecipacao --recebimentos; sem flag = os tres)';
+const VERSAO = 'v11.52 (espera o download ate 3 min: relatorios grandes demoram a gerar)';
 const espera = (ms) => new Promise(r => setTimeout(r, ms));
 
 /* Corre uma promessa contra um relogio: se passar de `ms`, rejeita com timeout.
@@ -216,9 +216,10 @@ async function baixar(page, conta, { titulo, etapas, arquivoBase }) {
     await espera(etapa.espera || 1200);
     await lidarCaptcha(page, conta.nome);
   }
-  // o "Gerar arquivo" dispara o download
+  // o "Gerar arquivo" dispara o download. Relatorios detalhados de periodo
+  // grande demoram a gerar (o botao fica com a rodinha) — espera ate 3 min.
   const [download] = await Promise.all([
-    page.waitForEvent('download', { timeout: 60000 }),
+    page.waitForEvent('download', { timeout: 180000 }),
     clicar(page, [/gerar arquivo/i], { timeout: 15000 }),
   ]);
   const sugerido = download.suggestedFilename() || `${arquivoBase}.xlsx`;
