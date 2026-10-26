@@ -55,7 +55,7 @@ function carregarContas() {
     + 'No GitHub, cadastre o segredo SICREDI_CONTAS.');
 }
 
-const VERSAO = 'v11.49 (rotulo do cabecalho corrigido: vendas detalhado + antecipacao detalhado)';
+const VERSAO = 'v11.50 (adiciona Recebimentos pagos detalhado: datas ou Essa Semana)';
 const espera = (ms) => new Promise(r => setTimeout(r, ms));
 
 /* Corre uma promessa contra um relogio: se passar de `ms`, rejeita com timeout.
@@ -703,8 +703,46 @@ async function processarConta(browser, conta, opt = {}) {
       }
     }
 
+    // RECEBIMENTOS (aba Pagos) — Relatorio DETALHADO. Periodo: datas (custom) ou
+    // "Essa Semana" (sem data). Mesmo calendario da antecipacao.
+    let faltouReceb = false;
+    for (let tentativa = 1; tentativa <= 2; tentativa++) {
+      try {
+        console.log(`  ${conta.nome}: abrindo Recebimentos... (tentativa ${tentativa})`);
+        await clicar(page, ['Recebimentos', /recebimentos/i], { timeout: 15000 });
+        await espera(2000);
+        await clicar(page, [/^\s*pagos\s*$/i], { timeout: 6000 }).catch(() => {}); // aba Pagos (ja e o padrao)
+        await espera(1500);
+        if (periodoCustom) {
+          await definirPeriodo(page, conta, opt, 'antecipacao'); // abre o calendario, digita as datas e confere
+        } else {
+          // Essa Semana: abre o calendario e clica no preset
+          if (!(await abrirPeriodoAntecipacao(page))) throw new Error('nao abriu o calendario de recebimentos');
+          await espera(400);
+          await clicar(page, [/essa semana/i], { timeout: 6000 });
+          await espera(500);
+          await aplicarPeriodo(page);
+          await espera(1800);
+        }
+        feitos.push(await baixar(page, conta, {
+          titulo: periodoCustom ? `Recebimentos pagos detalhado (${opt.de} a ${opt.ate})` : 'Recebimentos pagos detalhado (essa semana)',
+          arquivoBase: `recebimentos_detalhado_${limpo(conta.nome)}${sufixo}`,
+          etapas: [
+            { textos: [/exportar/i], espera: 1500 },
+            { textos: [/relat[oó]rio detalhado/i], espera: 800 },
+          ],
+        }));
+        faltouReceb = false;
+        break;
+      } catch (e) {
+        faltouReceb = true;
+        if (tentativa === 1) { console.log(`  ${conta.nome}: recebimentos nao veio, tentando de novo... (${e.message})`); await espera(1500); }
+        else { console.log(`  ${conta.nome}: faltou o recebimentos — marcado para refazer.`); }
+      }
+    }
+
     await ctx.close();
-    return { conta: conta.nome, ok: true, faltouAntecip, arquivos: feitos };
+    return { conta: conta.nome, ok: true, faltouAntecip: faltouAntecip || faltouReceb, arquivos: feitos };
   } catch (e) {
     // print da tela para entender o que travou
     try {
@@ -761,7 +799,7 @@ async function main() {
   console.log(`\n=== Robo Sicredi ${VERSAO} ===`);
   console.log(`Modo: ${MODO} | Lojas: ${contas.length}`
     + (filtro.length ? ` (so: ${contas.map(c => c.nome).join(', ')})` : ''));
-  console.log(`Relatorios: ${opt.soVendas ? 'SO vendas detalhado' : 'vendas detalhado + antecipacao detalhado'}`
+  console.log(`Relatorios: ${opt.soVendas ? 'SO vendas detalhado' : 'vendas + antecipacao + recebimentos (detalhados)'}`
     + ` | Periodo: ${opt.de && opt.ate ? `${opt.de} a ${opt.ate}` : 'Ultimos 7 dias'}\n`);
 
   const browser = await chromium.launch({
@@ -788,7 +826,7 @@ async function main() {
   const faltaAntecip = resultados.filter(r => r.ok && r.faltouAntecip);
   console.log('\n=================== RESUMO ===================');
   console.log(`Baixaram certo: ${ok.length} de ${resultados.length}`);
-  if (faltaAntecip.length) console.log(`Vendas OK mas faltou antecipacao (rode de novo so essas): ${faltaAntecip.map(r => r.conta).join(', ')}`);
+  if (faltaAntecip.length) console.log(`Vendas OK mas faltou antecipacao/recebimentos (rode de novo so essas): ${faltaAntecip.map(r => r.conta).join(', ')}`);
   if (captcha.length) console.log(`Faltaram (CAPTCHA, complete voce): ${captcha.map(r => r.conta).join(', ')}`);
   if (falhou.length) falhou.forEach(r => console.log(`Erro em ${r.conta}: ${r.erro}`));
   console.log('=============================================\n');
