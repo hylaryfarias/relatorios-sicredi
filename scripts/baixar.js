@@ -55,7 +55,7 @@ function carregarContas() {
     + 'No GitHub, cadastre o segredo SICREDI_CONTAS.');
 }
 
-const VERSAO = 'v11.52 (espera o download ate 3 min: relatorios grandes demoram a gerar)';
+const VERSAO = 'v11.53 (logs enxutos como o vendas; recebimentos: sem-dado nao e erro + espera mais)';
 const espera = (ms) => new Promise(r => setTimeout(r, ms));
 
 /* Corre uma promessa contra um relogio: se passar de `ms`, rejeita com timeout.
@@ -347,12 +347,11 @@ async function abrirPeriodoAntecipacao(page) {
      (classe osui-tooltip--is-open), sem clicar por cima. */
   /* Espera LEVE (sem estourar tempo): fim das requisicoes e o icone visivel.
      Esperas longas demais estouravam o limite e sobrava pouco pro clique. */
-  console.log('    (abrindo o calendario da antecipacao...)');
   await page.waitForLoadState('networkidle', { timeout: 6000 }).catch(() => {});
   await page.locator('[data-testid="calendar-trigger-icon"]').first()
     .waitFor({ state: 'visible', timeout: 10000 }).catch(() => {});
   await espera(1800);
-  if (await popupPeriodoAberto(page)) return true;
+  if (await popupPeriodoAberto(page)) return true; // (abrindo o calendario)
 
   const centroIcone = async () => {
     const el = page.locator('[data-testid="calendar-trigger-icon"]').first();
@@ -564,27 +563,21 @@ async function definirPeriodo(page, conta, opt, tipo = 'vendas') {
         await digitar('FilterDateInit', opt.de);
         await digitar('FilterDateEnd', opt.ate);
         await espera(300);
-        console.log(`  ${conta.nome}: campos apos digitar ${s} -> ${await valInit()} a ${await valEnd()}`);
         if (await camposOk()) break;
         // 2) reforco: clicar os dias no calendario
-        try { await clicarDiaCalendario(page, opt.de); await clicarDiaCalendario(page, opt.ate); }
-        catch (e) { console.log(`  ${conta.nome}: clique nos dias falhou (${e.message})`); }
+        try { await clicarDiaCalendario(page, opt.de); await clicarDiaCalendario(page, opt.ate); } catch { /* */ }
         await espera(300);
-        console.log(`  ${conta.nome}: campos apos clique ${s} -> ${await valInit()} a ${await valEnd()}`);
       }
       return camposOk();
     };
 
     const aberto = await abrirPeriodoAntecipacao(page);
-    console.log(`  ${conta.nome}: calendario ${aberto ? 'ABRIU' : 'NAO abriu'}.`);
-    if (!aberto) { await dumpPaginaCompleta(page); throw new Error('nao abriu o calendario da antecipacao'); }
-    console.log(`  ${conta.nome}: selecionando os dias...`);
+    if (!aberto) { await dumpPaginaCompleta(page); throw new Error('nao abriu o calendario'); }
     await espera(500);
     if (!(await selecionar())) {
       await dumpPaginaCompleta(page);
       throw new Error(`os dias nao ficaram ${opt.de}-${opt.ate} (ficou ${await valInit()}-${await valEnd()})`);
     }
-    console.log(`  ${conta.nome}: dias selecionados -> ${await valInit()} a ${await valEnd()}`);
 
     let aplicado = false;
     for (let a = 1; a <= 4 && !aplicado; a++) {
@@ -592,22 +585,17 @@ async function definirPeriodo(page, conta, opt, tipo = 'vendas') {
       await espera(2200);
       const lbl = await lerPeriodoAplicado(page);
       if (lbl.includes(opt.de) && lbl.includes(opt.ate)) { aplicado = true; break; }
-      console.log(`  ${conta.nome}: Aplicar nao colou (card="${lbl}"), re-tentando ${a}/4`);
       if (!(await popupPeriodoAberto(page))) {      // tooltip fechou: reabre e re-seleciona
         if (!(await abrirPeriodoAntecipacao(page))) break;
         await espera(400);
         await selecionar();
       }
     }
-    try {
-      fs.mkdirSync(PASTA_ERROS, { recursive: true });
-      await page.screenshot({ path: path.join(PASTA_ERROS, `periodo_${limpo(conta.nome)}_${hoje()}.png`), fullPage: true });
-    } catch { /* */ }
-    console.log(`  ${conta.nome}: periodo aplicado na tela -> "${await lerPeriodoAplicado(page)}"`);
     if (!aplicado) {
       await dumpPaginaCompleta(page);
       throw new Error(`o periodo aplicado nao ficou ${opt.de} a ${opt.ate} (nao vou baixar arquivo errado)`);
     }
+    console.log(`  ${conta.nome}: periodo aplicado -> ${opt.de} a ${opt.ate}`);
     return;
   }
 
@@ -707,29 +695,37 @@ async function processarConta(browser, conta, opt = {}) {
     // RECEBIMENTOS (aba Pagos) — Relatorio DETALHADO. Periodo: datas (custom) ou
     // "Essa Semana" (sem data). Mesmo calendario da antecipacao.
     let faltouReceb = false;
+    let semReceb = false;
     for (let tentativa = 1; quais.receb && tentativa <= 2; tentativa++) {
       try {
-        console.log(`  ${conta.nome}: abrindo Recebimentos... (tentativa ${tentativa})`);
-        await clicar(page, ['Recebimentos', /recebimentos/i], { timeout: 15000 });
-        await espera(2000);
-        await clicar(page, [/^\s*pagos\s*$/i], { timeout: 6000 }).catch(() => {}); // aba Pagos (ja e o padrao)
+        console.log(`  ${conta.nome}: abrindo Recebimentos...`);
+        await clicar(page, ['Recebimentos', /recebimentos/i], { timeout: 20000 });
+        await page.waitForLoadState('networkidle', { timeout: 6000 }).catch(() => {});
         await espera(1500);
+        await clicar(page, [/^\s*pagos\s*$/i], { timeout: 6000 }).catch(() => {}); // aba Pagos (ja e o padrao)
+        await espera(1200);
         if (periodoCustom) {
           await definirPeriodo(page, conta, opt, 'antecipacao'); // abre o calendario, digita as datas e confere
         } else {
-          // Essa Semana: abre o calendario e clica no preset
           if (!(await abrirPeriodoAntecipacao(page))) throw new Error('nao abriu o calendario de recebimentos');
           await espera(400);
           await clicar(page, [/essa semana/i], { timeout: 6000 });
           await espera(500);
           await aplicarPeriodo(page);
-          await espera(1800);
+        }
+        await page.waitForLoadState('networkidle', { timeout: 6000 }).catch(() => {});
+        await espera(2000); // deixa a lista/Exportar recarregar com o periodo
+        // SEM DADO no periodo (ex. hoje, que ainda nao teve pagamento): nao da pra
+        // exportar e nao e erro — avisa e segue.
+        if (await page.getByText(/sem recebimentos/i).first().isVisible({ timeout: 1500 }).catch(() => false)) {
+          console.log(`  ${conta.nome}: sem recebimentos pagos no periodo — nada a baixar.`);
+          semReceb = true; faltouReceb = false; break;
         }
         feitos.push(await baixar(page, conta, {
           titulo: periodoCustom ? `Recebimentos pagos detalhado (${opt.de} a ${opt.ate})` : 'Recebimentos pagos detalhado (essa semana)',
           arquivoBase: `recebimentos_detalhado_${limpo(conta.nome)}${sufixo}`,
           etapas: [
-            { textos: [/exportar/i], espera: 1500 },
+            { textos: [/exportar/i], espera: 1500, timeout: 25000 },
             { textos: [/relat[oó]rio detalhado/i], espera: 800 },
           ],
         }));
