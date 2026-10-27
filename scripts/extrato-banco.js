@@ -28,17 +28,25 @@ const PASTA = path.join(RAIZ, 'extratos');
 const PERFIL = path.join(RAIZ, 'perfil-chrome'); // perfil fixo do navegador (fica so no PC)
 const URL_BANCO = process.env.BANCO_URL
   || 'https://ibpj.sicredi.com.br/ib-view/loginpj/preauth.html';
-const VERSAO = 'extrato v37 (le TODAS as contas: rola a lista, pagina por numero/seta, aceita link onclick ou href)';
+const VERSAO = 'extrato v38 (le TODAS as contas pela janela Pesquisar Contas: link trocarConta + paginas link-pagina)';
 
-/* um link de conta na janela "Pesquisar Contas" pode vir como
-   <a onclick="...selconta/<ID>.html..."> OU <a href="...selconta/<ID>.html">.
-   Antes so olhava o onclick; se o portal troca para href, o robo achava 0
-   contas e caia nas 5 favoritas. Aqui aceita os dois. */
-const SEL_CONTA_LINK = 'a[onclick*="selconta"], a[href*="selconta"]';
-function idDaConta(onclick, href) {
-  const m = String(onclick || href || '').match(/selconta\/(\d+)\.html/i)
-    || String(href || '').match(/selconta\/(\d+)\.html/i);
-  return m ? m[1] : null;
+/* Como vem CADA conta na janela "Pesquisar Contas" (medido no HTML real):
+     <a class="a-link" onclick="trocarConta(10013665)">JAPI FOODS LTDA</a>
+   A selecao e a FUNCAO trocarConta(<ID>) — NAO existe link selconta nem href.
+   (Versoes antigas procuravam "selconta" e por isso achavam 0 contas na janela
+   e caiam nas 5 favoritas do seletor de cima.) Mantenho "selconta" tambem como
+   reserva, caso algum acesso ainda use o formato antigo. */
+const SEL_CONTA_LINK = 'a[onclick*="trocarConta"], a[onclick*="selconta"], a[href*="selconta"]';
+/* descobre COMO selecionar a conta a partir do onclick/href do link:
+   - via 'trocar': chamar trocarConta(<id>)  (formato atual)
+   - via 'url':    ir para /ib-view/selconta/<id>.html  (formato antigo) */
+function metodoConta(onclick, href) {
+  const s = `${onclick || ''} ${href || ''}`;
+  let m = s.match(/trocarConta\((\d+)\)/i);
+  if (m) return { id: m[1], via: 'trocar' };
+  m = s.match(/selconta\/(\d+)\.html/i);
+  if (m) return { id: m[1], via: 'url' };
+  return { id: null, via: null };
 }
 const espera = (ms) => new Promise(r => setTimeout(r, ms));
 const hoje = () => new Date().toLocaleDateString('sv-SE');
@@ -485,14 +493,14 @@ async function lerTabelaContas(page) {
       const razao = ((await lk.innerText().catch(() => '')) || '').replace(/\s+/g, ' ').trim();
       const onclick = (await lk.getAttribute('onclick').catch(() => '')) || '';
       const href = (await lk.getAttribute('href').catch(() => '')) || '';
-      const id = idDaConta(onclick, href);
+      const { id, via } = metodoConta(onclick, href);
       const rowtxt = ((await lk.locator('xpath=ancestor::tr[1]').innerText().catch(() => '')) || '').replace(/\s+/g, ' ');
       const mc = rowtxt.match(/(\d{4,6}-\d)/) || razao.match(/(\d{4,6}-\d)/);
       const conta = mc ? mc[1] : '';
-      const chave = id || (conta + '|' + razao);
+      const chave = (id ? via + id : '') || (conta + '|' + razao);
       if (!razao || vistos.has(chave)) continue;
       vistos.add(chave);
-      contas.push({ conta, razao, id, pagina: pag, label: conta ? `${conta} - ${razao}` : razao });
+      contas.push({ conta, razao, id, via, pagina: pag, label: conta ? `${conta} - ${razao}` : razao });
       novos++;
     }
     return novos;
@@ -503,6 +511,8 @@ async function lerTabelaContas(page) {
      (», ›, >, "Proxima", "Seguinte"). Pula controles "disabled". */
   const irProxima = async (prox) => {
     const numCands = [
+      /* paginador REAL da janela: <a class="link-pagina">2</a> */
+      page.locator('a.link-pagina').filter({ hasText: new RegExp(`^\\s*${prox}\\s*$`) }),
       page.getByRole('link', { name: String(prox), exact: true }),
       page.getByRole('button', { name: String(prox), exact: true }),
       page.locator('.pagination a, .pagination li, [class*="pagina"] a, [class*="pagination"] a, nav a, ul li a')
@@ -583,6 +593,8 @@ async function irPaginaContas(page, n) {
 async function filtrarPorConta(page, conta) {
   const num = String(conta).split('-')[0].replace(/\D/g, '');
   const campos = [
+    /* campo REAL da janela (medido no HTML): id=text_filtroConta */
+    page.locator('#text_filtroConta'),
     page.getByLabel(/^\s*conta\s*$/i),
     page.getByPlaceholder(/conta/i),
     /* 2o input de texto visivel da janela costuma ser o "Conta"
@@ -620,16 +632,31 @@ async function selecionarContaModal(page, c) {
       }
     } catch { /* cai para o goto por ID abaixo */ }
   }
-  /* caminho principal: ir DIRETO para /ib-view/selconta/<ID>.html (o destino do
-     link da conta, capturado na listagem). Nao reabre janela nem digita em
-     campo nenhum — imune ao problema de digitar no campo errado. */
-  if (c.id) {
+  /* caminho principal (formato ATUAL): chamar a propria funcao do site,
+     trocarConta(<ID>) — e o que o onclick do link faz. A funcao e global na
+     pagina do IB (o seletor de contas fica sempre no topo), entao da pra trocar
+     de conta sem reabrir a janela. Se por acaso nao existir no escopo atual,
+     cai para reabrir a janela e clicar no link (reserva abaixo). */
+  if (c.id && c.via === 'trocar') {
+    const ok = await page.evaluate((id) => {
+      if (typeof trocarConta === 'function') { trocarConta(Number(id)); return true; }
+      return false;
+    }, c.id).catch(() => false);
+    if (ok) {
+      await espera(2500);
+      await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
+      return;
+    }
+  }
+  /* formato ANTIGO: ir DIRETO para /ib-view/selconta/<ID>.html */
+  if (c.id && c.via === 'url') {
     await page.goto(new URL(`/ib-view/selconta/${c.id}.html`, page.url()).href,
       { waitUntil: 'domcontentloaded', timeout: 60000 });
     await espera(2000);
     return;
   }
-  /* reserva (raro: sem ID): reabre a janela e clica na razao social */
+  /* reserva: reabre a janela, filtra pela conta e CLICA no link dela (o clique
+     dispara o onclick original — trocarConta ou selconta, tanto faz) */
   await abrirPesquisarContas(page);
   await espera(700);
   if (!(await filtrarPorConta(page, c.conta))) await irPaginaContas(page, c.pagina);
@@ -637,9 +664,15 @@ async function selecionarContaModal(page, c) {
   let alvo = page.getByRole('link', { name: reRazao }).first();
   if (!(await alvo.isVisible({ timeout: 1500 }).catch(() => false))) alvo = page.getByText(reRazao).first();
   const onclick = await alvo.getAttribute('onclick').catch(() => null);
-  const m = onclick && onclick.match(/selconta\/(\d+)\.html/i);
-  if (m) await page.goto(new URL(`/ib-view/selconta/${m[1]}.html`, page.url()).href, { waitUntil: 'domcontentloaded', timeout: 60000 });
-  else { await alvo.scrollIntoViewIfNeeded().catch(() => {}); await alvo.click({ timeout: 8000, force: true }); }
+  const href = await alvo.getAttribute('href').catch(() => null);
+  const met = metodoConta(onclick, href);
+  if (met.via === 'url') {
+    await page.goto(new URL(`/ib-view/selconta/${met.id}.html`, page.url()).href, { waitUntil: 'domcontentloaded', timeout: 60000 });
+  } else {
+    /* trocarConta e sem-id caem aqui: clicar o link roda o handler certo */
+    await alvo.scrollIntoViewIfNeeded().catch(() => {});
+    await alvo.click({ timeout: 8000, force: true });
+  }
   await espera(2500);
 }
 
