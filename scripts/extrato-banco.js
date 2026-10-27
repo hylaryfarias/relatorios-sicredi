@@ -28,7 +28,18 @@ const PASTA = path.join(RAIZ, 'extratos');
 const PERFIL = path.join(RAIZ, 'perfil-chrome'); // perfil fixo do navegador (fica so no PC)
 const URL_BANCO = process.env.BANCO_URL
   || 'https://ibpj.sicredi.com.br/ib-view/loginpj/preauth.html';
-const VERSAO = 'extrato v36 (lista pular no banco.json: exclui contas do run)';
+const VERSAO = 'extrato v37 (le TODAS as contas: rola a lista, pagina por numero/seta, aceita link onclick ou href)';
+
+/* um link de conta na janela "Pesquisar Contas" pode vir como
+   <a onclick="...selconta/<ID>.html..."> OU <a href="...selconta/<ID>.html">.
+   Antes so olhava o onclick; se o portal troca para href, o robo achava 0
+   contas e caia nas 5 favoritas. Aqui aceita os dois. */
+const SEL_CONTA_LINK = 'a[onclick*="selconta"], a[href*="selconta"]';
+function idDaConta(onclick, href) {
+  const m = String(onclick || href || '').match(/selconta\/(\d+)\.html/i)
+    || String(href || '').match(/selconta\/(\d+)\.html/i);
+  return m ? m[1] : null;
+}
 const espera = (ms) => new Promise(r => setTimeout(r, ms));
 const hoje = () => new Date().toLocaleDateString('sv-SE');
 /* duracao amigavel: "42s" ou "3m 07s" */
@@ -311,7 +322,7 @@ async function abrirPesquisarContas(page) {
     /* sinal CONFIAVEL: os links de conta "selconta" so existem na janela
        "Pesquisar Contas". (Antes eu contava linhas com cara de conta, mas as
        linhas de lancamento do proprio Extrato davam falso positivo.) */
-    const nSel = await page.locator('a[onclick*="selconta"]').count().catch(() => 0);
+    const nSel = await page.locator(SEL_CONTA_LINK).count().catch(() => 0);
     if (nSel > 0) return true;
     return await page.getByText(/pesquisar contas/i).first().isVisible({ timeout: 600 }).catch(() => false);
   };
@@ -411,6 +422,31 @@ async function dumpModal(page) {
         if (t && t.length < 25 && /pesquisar|limpar|^\d+$|proxim|anterior|»|«|>|</i.test(t))
           out.push(`BTN/A: <${el.tagName.toLowerCase()} class="${el.className}"> ${t}`);
       });
+      /* como vem CADA linha de conta (a parte que mais muda quando o portal e
+         atualizado): mostra as primeiras <a> que parecem conta, com onclick/href */
+      out.push('--- LINHAS DE CONTA (primeiras 12) ---');
+      let vistas = 0;
+      document.querySelectorAll('a').forEach(el => {
+        if (vistas >= 12) return;
+        const oc = el.getAttribute('onclick') || '';
+        const hr = el.getAttribute('href') || '';
+        const t = (el.textContent || '').replace(/\s+/g, ' ').trim();
+        const temConta = /\d{3,6}-\d/.test(t) || /selconta/i.test(oc + hr);
+        if (!temConta || !t) return;
+        vistas++;
+        out.push(`CONTA-A: onclick="${oc.slice(0, 60)}" href="${hr.slice(0, 60)}" txt="${t.slice(0, 50)}"`);
+      });
+      if (!vistas) {
+        /* nenhum <a> com cara de conta: mostra as linhas da tabela, pra ver
+           onde foi parar o clique de selecionar */
+        document.querySelectorAll('tr').forEach(tr => {
+          if (vistas >= 8) return;
+          const t = (tr.textContent || '').replace(/\s+/g, ' ').trim();
+          if (!/\d{3,6}-\d/.test(t)) return;
+          vistas++;
+          out.push(`CONTA-TR: ${tr.outerHTML.replace(/\s+/g, ' ').slice(0, 220)}`);
+        });
+      }
       return out.join('\n');
     });
     fs.writeFileSync(path.join(PASTA, 'pesquisar_contas_debug.txt'), info || '(vazio)', 'utf8');
@@ -420,29 +456,84 @@ async function dumpModal(page) {
 async function lerTabelaContas(page) {
   await dumpModal(page);
   const contas = [], vistos = new Set();
-  for (let pag = 1; pag <= 20; pag++) {
-    await espera(800);
-    /* cada conta e um link "selconta/<ID>.html" — guardo o ID para selecionar
-       depois indo direto na URL (sem reabrir janela nem digitar em campo) */
-    const links = page.locator('a[onclick*="selconta"]');
+
+  /* a tabela do OutSystems as vezes so "desenha" as linhas que estao na area
+     visivel — rola a lista ate o fim algumas vezes para forcar o restante a
+     carregar antes de ler. Sem isso, so vinham as primeiras ~5 linhas. */
+  const rolarTudo = async () => {
+    for (let s = 0; s < 5; s++) {
+      await page.evaluate((sel) => {
+        const link = document.querySelector(sel);
+        const cont = link && link.closest(
+          'div[style*="overflow"], .table-responsive, [class*="scroll"], ' +
+          '[class*="modal"], [class*="popup"], [class*="dialog"]');
+        if (cont) cont.scrollTop = cont.scrollHeight;
+        window.scrollTo(0, document.body.scrollHeight);
+      }, SEL_CONTA_LINK).catch(() => {});
+      await espera(300);
+    }
+  };
+
+  /* le os links de conta que estao na janela AGORA; devolve quantos NOVOS achou */
+  const lerPagina = async (pag) => {
+    await rolarTudo();
+    const links = page.locator(SEL_CONTA_LINK);
     const n = await links.count();
+    let novos = 0;
     for (let i = 0; i < n; i++) {
       const lk = links.nth(i);
       const razao = ((await lk.innerText().catch(() => '')) || '').replace(/\s+/g, ' ').trim();
       const onclick = (await lk.getAttribute('onclick').catch(() => '')) || '';
-      const mid = onclick.match(/selconta\/(\d+)\.html/i);
-      const id = mid ? mid[1] : null;
+      const href = (await lk.getAttribute('href').catch(() => '')) || '';
+      const id = idDaConta(onclick, href);
       const rowtxt = ((await lk.locator('xpath=ancestor::tr[1]').innerText().catch(() => '')) || '').replace(/\s+/g, ' ');
-      const mc = rowtxt.match(/(\d{4,6}-\d)/);
+      const mc = rowtxt.match(/(\d{4,6}-\d)/) || razao.match(/(\d{4,6}-\d)/);
       const conta = mc ? mc[1] : '';
       const chave = id || (conta + '|' + razao);
       if (!razao || vistos.has(chave)) continue;
       vistos.add(chave);
       contas.push({ conta, razao, id, pagina: pag, label: conta ? `${conta} - ${razao}` : razao });
+      novos++;
     }
-    const prox = page.getByText(new RegExp(`^\\s*${pag + 1}\\s*$`)).last();
-    if (!(await prox.isVisible({ timeout: 1000 }).catch(() => false))) break;
-    await prox.click().catch(() => {});
+    return novos;
+  };
+
+  /* clica para a PROXIMA pagina. Tenta, nesta ordem: o numero da proxima
+     pagina (link/botao/texto), um link de paginador, e por fim as setas
+     (», ›, >, "Proxima", "Seguinte"). Pula controles "disabled". */
+  const irProxima = async (prox) => {
+    const numCands = [
+      page.getByRole('link', { name: String(prox), exact: true }),
+      page.getByRole('button', { name: String(prox), exact: true }),
+      page.locator('.pagination a, .pagination li, [class*="pagina"] a, [class*="pagination"] a, nav a, ul li a')
+        .filter({ hasText: new RegExp(`^\\s*${prox}\\s*$`) }),
+      page.getByText(new RegExp(`^\\s*${prox}\\s*$`)),
+    ];
+    const setaCands = [
+      page.locator('a, button, li, [role="button"]').filter({ hasText: /^\s*(»|›|>|≫)\s*$/ }),
+      page.locator('a, button, li, [role="button"]').filter({ hasText: /pr[oó]xim|seguinte|^\s*next\s*$/i }),
+    ];
+    for (const grupo of [numCands, setaCands]) {
+      for (const c of grupo) {
+        const el = c.last();
+        if (!(await el.isVisible({ timeout: 600 }).catch(() => false))) continue;
+        const cls = (await el.getAttribute('class').catch(() => '')) || '';
+        const dis = (await el.getAttribute('aria-disabled').catch(() => '')) || '';
+        if (/disabled/i.test(cls) || /true/i.test(dis)) continue;
+        await el.scrollIntoViewIfNeeded().catch(() => {});
+        await el.click().catch(() => {});
+        return true;
+      }
+    }
+    return false;
+  };
+
+  for (let pag = 1; pag <= 30; pag++) {
+    await espera(700);
+    const novos = await lerPagina(pag);
+    /* pagina sem NENHUMA conta nova = chegou ao fim (ou o paginador repetiu) */
+    if (pag > 1 && novos === 0) break;
+    if (!(await irProxima(pag + 1))) break;
   }
 
   /* Fallback para acessos com POUCAS contas (5 ou menos): o Sicredi nao mostra o
