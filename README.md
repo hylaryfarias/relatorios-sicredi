@@ -54,6 +54,30 @@ código sozinho. Para isso, uma vez, você autoriza a leitura do e-mail:
    segredos `GMAIL_CLIENT_ID`, `GMAIL_CLIENT_SECRET` e `GMAIL_REFRESH_TOKEN`
    (o programa mostra o valor do último no fim).
 
+## Baixar o extrato bancário (Internet Banking)
+
+Além dos relatórios da maquininha, há um robô para o **extrato bancário** do
+Sicredi Internet Banking PJ: entra com CNPJ + login + senha, baixa a planilha de
+**cada conta** do acesso e guarda em [`extratos/`](extratos). É **só consulta** —
+lê e baixa, não mexe em dinheiro — e **roda só no PC**, com o navegador visível
+(não dá para rodar no GitHub).
+
+Setup (uma vez), na máquina que vai rodar:
+
+1. Instale o **Node.js** LTS: <https://nodejs.org>
+2. Crie o `banco.json` (molde em `banco-EXEMPLO.json`), com o acesso do Sicredi:
+   ```json
+   { "cnpj": "00.000.000/0001-00", "login": "...", "senha": "..." }
+   ```
+   Ele **nunca** sobe para o GitHub (está no `.gitignore`); fica só nesse PC.
+   Período: padrão "Últimos 7 dias"; troque com `"periodo": "Ultimos 30 dias"`.
+3. Rode:
+   - clique duas vezes em **BAIXAR-EXTRATO-WINDOWS.bat** (ou **BAIXAR-EXTRATO-MAC.command**);
+   - ou no terminal: `node scripts/extrato-banco.js`.
+
+Os arquivos saem em `extratos/`, no mesmo formato que o painel de conciliação lê.
+(Há também `extrato-bradesco.js` + `banco-bradesco.json` para o Bradesco.)
+
 ## O que este robô não faz
 
 Não resolve o "prove que você é humano" — quem resolve é você, quando aparecer.
