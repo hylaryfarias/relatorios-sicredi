@@ -55,7 +55,7 @@ function carregarContas() {
     + 'No GitHub, cadastre o segredo SICREDI_CONTAS.');
 }
 
-const VERSAO = 'v11.53 (logs enxutos como o vendas; recebimentos: sem-dado nao e erro + espera mais)';
+const VERSAO = 'v11.54 (recebimentos: confere "sem recebimentos" de novo apos espera — nao baixa vazio por carregamento lento ao rodar os tres juntos)';
 const espera = (ms) => new Promise(r => setTimeout(r, ms));
 
 /* Corre uma promessa contra um relogio: se passar de `ms`, rejeita com timeout.
@@ -713,11 +713,21 @@ async function processarConta(browser, conta, opt = {}) {
           await espera(500);
           await aplicarPeriodo(page);
         }
-        await page.waitForLoadState('networkidle', { timeout: 6000 }).catch(() => {});
-        await espera(2000); // deixa a lista/Exportar recarregar com o periodo
+        await page.waitForLoadState('networkidle', { timeout: 8000 }).catch(() => {});
+        await espera(2500); // deixa a lista/Exportar recarregar com o periodo
         // SEM DADO no periodo (ex. hoje, que ainda nao teve pagamento): nao da pra
-        // exportar e nao e erro — avisa e segue.
-        if (await page.getByText(/sem recebimentos/i).first().isVisible({ timeout: 1500 }).catch(() => false)) {
+        // exportar e nao e erro — avisa e segue. MAS: rodando os tres relatorios
+        // juntos, a mensagem "sem recebimentos" PISCAVA enquanto a lista ainda
+        // carregava, e o robo concluia "vazio" cedo demais (sozinho dava tempo de
+        // carregar). Por isso, quando ela aparece, esperamos mais e CONFERIMOS DE
+        // NOVO: se era so a lista carregando, a mensagem some e seguimos pro
+        // Exportar; se continua visivel, ai sim e vazio de verdade.
+        let semMsg = await page.getByText(/sem recebimentos/i).first().isVisible({ timeout: 2000 }).catch(() => false);
+        if (semMsg) {
+          await espera(3000);
+          semMsg = await page.getByText(/sem recebimentos/i).first().isVisible({ timeout: 1000 }).catch(() => false);
+        }
+        if (semMsg) {
           console.log(`  ${conta.nome}: sem recebimentos pagos no periodo — nada a baixar.`);
           semReceb = true; faltouReceb = false; break;
         }
