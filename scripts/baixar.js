@@ -55,7 +55,7 @@ function carregarContas() {
     + 'No GitHub, cadastre o segredo SICREDI_CONTAS.');
 }
 
-const VERSAO = 'v11.54 (recebimentos: confere "sem recebimentos" de novo apos espera — nao baixa vazio por carregamento lento ao rodar os tres juntos)';
+const VERSAO = 'v11.55 (recebimentos: tenta exportar direto em vez de confiar no texto "sem recebimentos"; so trata como vazio se a exportacao falhar E a mensagem aparecer)';
 const espera = (ms) => new Promise(r => setTimeout(r, ms));
 
 /* Corre uma promessa contra um relogio: se passar de `ms`, rejeita com timeout.
@@ -714,23 +714,13 @@ async function processarConta(browser, conta, opt = {}) {
           await aplicarPeriodo(page);
         }
         await page.waitForLoadState('networkidle', { timeout: 8000 }).catch(() => {});
-        await espera(2500); // deixa a lista/Exportar recarregar com o periodo
-        // SEM DADO no periodo (ex. hoje, que ainda nao teve pagamento): nao da pra
-        // exportar e nao e erro — avisa e segue. MAS: rodando os tres relatorios
-        // juntos, a mensagem "sem recebimentos" PISCAVA enquanto a lista ainda
-        // carregava, e o robo concluia "vazio" cedo demais (sozinho dava tempo de
-        // carregar). Por isso, quando ela aparece, esperamos mais e CONFERIMOS DE
-        // NOVO: se era so a lista carregando, a mensagem some e seguimos pro
-        // Exportar; se continua visivel, ai sim e vazio de verdade.
-        let semMsg = await page.getByText(/sem recebimentos/i).first().isVisible({ timeout: 2000 }).catch(() => false);
-        if (semMsg) {
-          await espera(3000);
-          semMsg = await page.getByText(/sem recebimentos/i).first().isVisible({ timeout: 1000 }).catch(() => false);
-        }
-        if (semMsg) {
-          console.log(`  ${conta.nome}: sem recebimentos pagos no periodo — nada a baixar.`);
-          semReceb = true; faltouReceb = false; break;
-        }
+        await espera(2500); // deixa a lista/Exportar carregar com o periodo
+        // NAO decidimos "vazio" pelo texto aqui: a mensagem "sem recebimentos"
+        // aparecia na tela mesmo QUANDO HAVIA dado (e enquanto a lista carregava),
+        // e o robo baixava vazio. Em vez disso TENTAMOS exportar direto — se tem
+        // recebimento, o botao Exportar funciona e baixa. So no catch, se a
+        // exportacao falhar E a tela mostrar "sem recebimentos", ai sim e vazio de
+        // verdade (sem dado no periodo) e nao erro.
         feitos.push(await baixar(page, conta, {
           titulo: periodoCustom ? `Recebimentos pagos detalhado (${opt.de} a ${opt.ate})` : 'Recebimentos pagos detalhado (essa semana)',
           arquivoBase: `recebimentos_detalhado_${limpo(conta.nome)}${sufixo}`,
@@ -742,6 +732,19 @@ async function processarConta(browser, conta, opt = {}) {
         faltouReceb = false;
         break;
       } catch (e) {
+        // A exportacao falhou: pode ser VAZIO de verdade (sem pagamento no
+        // periodo, tela "sem recebimentos") ou falha real de carregamento. So
+        // tratamos como vazio quando a mensagem esta mesmo visivel; nesse caso
+        // guardamos um print pra conferir que nao havia dado.
+        const vazio = await page.getByText(/sem recebimentos/i).first().isVisible({ timeout: 2000 }).catch(() => false);
+        if (vazio) {
+          try {
+            fs.mkdirSync(PASTA_ERROS, { recursive: true });
+            await page.screenshot({ path: path.join(PASTA_ERROS, `recebimentos_vazio_${limpo(conta.nome)}_${hoje()}.png`), fullPage: true });
+          } catch { /* sem print */ }
+          console.log(`  ${conta.nome}: sem recebimentos pagos no periodo — nada a baixar. (print em erros\\ pra conferir)`);
+          semReceb = true; faltouReceb = false; break;
+        }
         faltouReceb = true;
         if (tentativa === 1) { console.log(`  ${conta.nome}: recebimentos nao veio, tentando de novo... (${e.message})`); await espera(1500); }
         else { console.log(`  ${conta.nome}: faltou o recebimentos — marcado para refazer.`); }
