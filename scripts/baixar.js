@@ -55,7 +55,7 @@ function carregarContas() {
     + 'No GitHub, cadastre o segredo SICREDI_CONTAS.');
 }
 
-const VERSAO = 'v11.56 (paralelo: varias lojas ao mesmo tempo com --lotes N, padrao 4; login passa 1 por vez num portao pra nao cruzar o codigo do e-mail)';
+const VERSAO = 'v11.57 (paralelo com --lotes N; login em fila pra nao cruzar o codigo; mostra a cada passo QUAIS lojas estao rodando agora e o progresso X/total)';
 const espera = (ms) => new Promise(r => setTimeout(r, ms));
 
 /* Corre uma promessa contra um relogio: se passar de `ms`, rejeita com timeout.
@@ -857,6 +857,9 @@ async function main() {
 
   const fila = contas.slice();
   const resultados = [];
+  const total = contas.length;
+  const emAndamento = new Set(); // lojas rodando AGORA (o "lote" do momento)
+  const lote = () => `rodando agora (${emAndamento.size}): ${[...emAndamento].join(', ') || '—'}`;
   async function trabalhador(n) {
     await espera(n * 900); // comeca escalonado, pra nao baterem todas no portao de uma vez
     while (fila.length) {
@@ -866,8 +869,13 @@ async function main() {
         resultados.push({ conta: conta.nome || '(sem nome)', ok: false, erro: 'faltou login ou senha' });
         continue;
       }
-      console.log(`\n== ${conta.nome} ==`);
-      resultados.push(await processarConta(browser, conta, opt));
+      emAndamento.add(conta.nome);
+      console.log(`\n== ${conta.nome} == entrou  |  ${lote()}  |  na fila: ${fila.length}`);
+      const r = await processarConta(browser, conta, opt);
+      resultados.push(r);
+      emAndamento.delete(conta.nome);
+      const marca = r.ok ? 'OK' : (r.captcha ? 'CAPTCHA' : 'FALHOU');
+      console.log(`-- ${conta.nome}: ${marca} (${resultados.length}/${total} prontas)  |  ${lote()}`);
     }
   }
   await Promise.all(Array.from({ length: LOTES }, (_, n) => trabalhador(n)));
