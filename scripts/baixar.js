@@ -55,7 +55,7 @@ function carregarContas() {
     + 'No GitHub, cadastre o segredo SICREDI_CONTAS.');
 }
 
-const VERSAO = 'v11.55 (recebimentos: tenta exportar direto em vez de confiar no texto "sem recebimentos"; so trata como vazio se a exportacao falhar E a mensagem aparecer)';
+const VERSAO = 'v11.56 (paralelo: varias lojas ao mesmo tempo com --lotes N, padrao 4; login passa 1 por vez num portao pra nao cruzar o codigo do e-mail)';
 const espera = (ms) => new Promise(r => setTimeout(r, ms));
 
 /* Corre uma promessa contra um relogio: se passar de `ms`, rejeita com timeout.
@@ -616,6 +616,20 @@ async function definirPeriodo(page, conta, opt, tipo = 'vendas') {
 }
 
 /* -------- uma loja, inteira -------- */
+/* PORTAO DO LOGIN — trava que deixa SO UMA loja por vez pedir+ler o codigo do
+ * e-mail. Como todas as lojas usam a MESMA caixa, dois codigos no ar ao mesmo
+ * tempo se cruzariam (o robo nao sabe de qual loja e cada codigo). Entao, mesmo
+ * rodando varias lojas em paralelo, a parte "pedir codigo -> ler -> digitar"
+ * passa uma de cada vez por aqui. Assim que a loja loga, solta o portao (a
+ * proxima ja comeca a logar) e ela segue baixando os relatorios em paralelo. */
+let _filaLogin = Promise.resolve();
+function comPortaoLogin(fn) {
+  const anterior = _filaLogin;
+  let liberar;
+  _filaLogin = new Promise((r) => { liberar = r; });
+  return anterior.then(fn).finally(() => liberar());
+}
+
 async function processarConta(browser, conta, opt = {}) {
   const ctx = await browser.newContext({ acceptDownloads: true });
   const page = await ctx.newPage();
@@ -624,7 +638,12 @@ async function processarConta(browser, conta, opt = {}) {
   const sufixo = periodoCustom ? `_${opt.de.replace(/\//g, '')}-${opt.ate.replace(/\//g, '')}` : '';
   const quais = opt.quais || { vendas: true, antecip: true, receb: true };
   try {
-    await entrar(page, conta);
+    // LOGIN + CODIGO: passa pelo portao (uma loja por vez), pra nao cruzar os
+    // codigos do e-mail. Depois de logada, solta o portao e segue em paralelo.
+    await comPortaoLogin(async () => {
+      await entrar(page, conta);
+      await espera(1500); // deixa o fluxo do codigo assentar antes de liberar a proxima
+    });
 
     // VENDAS — Relatorio DETALHADO. Periodo: custom (ex. agosto) ou 7 dias.
     if (quais.vendas) {
@@ -774,8 +793,11 @@ async function main() {
        --so-vendas            atalho para so vendas
        --mes 2026-08 (ou 08)  periodo = o mes inteiro (ex.: agosto)
        --de 01/08/2026 --ate 31/08/2026   periodo por datas
+       --lotes N              quantas lojas em paralelo ao mesmo tempo (padrao 4).
+                              O LOGIN continua 1 por vez (fila), pra nao cruzar o
+                              codigo do e-mail; so os downloads e que correm juntos.
        nomes/logins soltos    roda SO essas lojas (ex.: 02 isa02)
-     Sem nada: 7 dias, os tres relatorios detalhados, todas as lojas. */
+     Sem nada: 7 dias, os tres relatorios detalhados, todas as lojas, 4 em paralelo. */
   const rawArgs = process.argv.slice(2);
   const opt = { de: null, ate: null, deISO: null, ateISO: null, quais: { vendas: false, antecip: false, receb: false } };
   let escolheu = false;
@@ -789,6 +811,7 @@ async function main() {
     else if (a === '--de') opt.de = rawArgs[++i];
     else if (a === '--ate' || a === '--até') opt.ate = rawArgs[++i];
     else if (a === '--mes' || a === '--mês') opt.mes = rawArgs[++i];
+    else if (a === '--lotes' || a === '--lote' || a === '--paralelo') opt.lotes = parseInt(rawArgs[++i], 10) || null;
     else if (a.startsWith('--')) { /* flag desconhecida: ignora */ }
     else filtro.push(a);
   }
@@ -826,16 +849,28 @@ async function main() {
     slowMo: MODO === 'local' ? 120 : 0,
   });
 
+  // Quantas lojas em paralelo. O LOGIN de cada uma passa pelo portao (1 por vez),
+  // entao NAO ha risco de cruzar o codigo do e-mail; o que corre junto sao os
+  // downloads (a parte lenta). Regule com --lotes N; padrao 4.
+  const LOTES = Math.max(1, Math.min(opt.lotes || 4, contas.length));
+  console.log(`Paralelo: ate ${LOTES} loja(s) ao mesmo tempo (login em fila, 1 por vez).\n`);
+
+  const fila = contas.slice();
   const resultados = [];
-  for (const conta of contas) {
-    if (!conta.login || !conta.senha) {
-      resultados.push({ conta: conta.nome || '(sem nome)', ok: false, erro: 'faltou login ou senha' });
-      continue;
+  async function trabalhador(n) {
+    await espera(n * 900); // comeca escalonado, pra nao baterem todas no portao de uma vez
+    while (fila.length) {
+      const conta = fila.shift();
+      if (!conta) break;
+      if (!conta.login || !conta.senha) {
+        resultados.push({ conta: conta.nome || '(sem nome)', ok: false, erro: 'faltou login ou senha' });
+        continue;
+      }
+      console.log(`\n== ${conta.nome} ==`);
+      resultados.push(await processarConta(browser, conta, opt));
     }
-    console.log(`\n== ${conta.nome} ==`);
-    resultados.push(await processarConta(browser, conta, opt));
-    await espera(2500 + Math.random() * 2500); // pausa entre lojas, sem pressa
   }
+  await Promise.all(Array.from({ length: LOTES }, (_, n) => trabalhador(n)));
   await browser.close();
 
   // resumo final
