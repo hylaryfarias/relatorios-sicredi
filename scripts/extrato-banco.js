@@ -50,6 +50,9 @@ function metodoConta(onclick, href) {
 }
 const espera = (ms) => new Promise(r => setTimeout(r, ms));
 const hoje = () => new Date().toLocaleDateString('sv-SE');
+/* data que vai no NOME do arquivo: a do dia baixado quando o periodo e um dia
+   so (--de X --ate X, ex.: robo do dia util anterior); senao, a de hoje */
+let dataArquivo = null;
 /* duracao amigavel: "42s" ou "3m 07s" */
 const dur = (ms) => { const s = Math.round(ms / 1000); return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, '0')}s`; };
 
@@ -678,7 +681,7 @@ async function selecionarContaModal(page, c) {
 
 async function baixarPlanilha(page, conta, ofx) {
   const extPref = ofx ? '.ofx' : '.xls';
-  const destino = path.join(PASTA, `extrato_${limpo(conta.label)}_${hoje()}${extPref}`);
+  const destino = path.join(PASTA, `extrato_${limpo(conta.label)}_${dataArquivo || hoje()}${extPref}`);
   /* escuta o download no CONTEXTO (pega tambem se abrir em outra aba/popup) */
   const dlPromise = page.context().waitForEvent('download', { timeout: 60000 });
   /* OFX = botao "Gerar OFX"; padrao = "Gerar Planilha" (Excel) */
@@ -738,6 +741,10 @@ async function main() {
   }
   if (OPT.ofx) console.log('Formato: OFX');
   if (OPT.de && OPT.ate) console.log(`Periodo (datas): ${OPT.de} a ${OPT.ate}`);
+  if (OPT.de && OPT.de === OPT.ate) {
+    const m = String(OPT.de).match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+    if (m) dataArquivo = `${m[3]}-${m[2]}-${m[1]}`;
+  }
   const filtros = contaArgs.map(s => s.replace(/\D/g, '')).filter(Boolean);
   /* contas a PULAR (lista "pular" no banco.json: nomes ou numeros de conta).
      Ex.: "pular": ["CHETON"]  ou  "pular": ["70836-6"]. */

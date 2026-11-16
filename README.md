@@ -78,6 +78,22 @@ Setup (uma vez), na máquina que vai rodar:
 Os arquivos saem em `extratos/`, no mesmo formato que o painel de conciliação lê.
 (Há também `extrato-bradesco.js` + `banco-bradesco.json` para o Bradesco.)
 
+### Só o dia útil anterior
+
+Mesmo robô, mesmo `banco.json`, mas baixa **só o dia útil anterior** a hoje
+(na segunda, baixa a sexta; depois de feriado, pula o feriado). O arquivo sai
+com a data do extrato no nome, ex.: `extrato_..._2026-11-13.xls`.
+
+- clique duas vezes em **BAIXAR-EXTRATO-DIA-ANTERIOR-WINDOWS.bat** (ou **...-MAC.command**);
+- ou no terminal: `node scripts/extrato-dia-anterior.js`
+  - `--mostrar` só mostra qual data vai baixar, sem entrar no banco;
+  - `--data 13/11/2026` baixa um dia específico;
+  - `--ofx` e números de conta funcionam igual ao robô normal.
+
+Feriados nacionais (incluindo Carnaval, Sexta-feira Santa e Corpus Christi) já
+são pulados. Feriado da sua cidade/estado: adicione no `banco.json`:
+`"feriados": ["2026-01-20"]`.
+
 ## O que este robô não faz
 
 Não resolve o "prove que você é humano" — quem resolve é você, quando aparecer.
